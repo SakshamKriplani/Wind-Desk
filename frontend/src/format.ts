@@ -71,3 +71,37 @@ export function download(filename: string, text: string) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/** Whole number with thousands separators, or a dash. */
+export function int(v: number | null | undefined, digits = 0): string {
+  if (v == null || Number.isNaN(v)) return "–";
+  return v.toLocaleString("en-GB", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+/** Pounds sterling; negative values get a leading minus. */
+export function gbp(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "–";
+  const s = Math.abs(Math.round(v)).toLocaleString("en-GB");
+  return `${v < 0 ? "−" : ""}£${s}`;
+}
+
+/** "hh:mm:ss" countdown from milliseconds. */
+export function countdown(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+}
+
+/** Next occurrence of a UK wall-clock time ("09:50") after `now`, as epoch ms. */
+export function nextUkTime(hhmm: string, now: number): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(new Date(now));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value);
+  const ukNowAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour") % 24, get("minute"), get("second"));
+  const offset = ukNowAsUtc - Math.floor(now / 1000) * 1000; // UK offset from UTC
+  let target = Date.UTC(get("year"), get("month") - 1, get("day"), h, m) - offset;
+  if (target <= now) target += 24 * 3600e3;
+  return target;
+}

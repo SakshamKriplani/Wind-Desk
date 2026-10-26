@@ -73,7 +73,7 @@ def metrics(error: pd.Series, actual: pd.Series | None = None) -> dict:
     e = pd.Series(error, dtype="float64").dropna()
     if e.empty:
         return {"n": 0, "mae": None, "rmse": None, "bias": None, "p50_abs": None,
-                "p90_abs": None, "max_abs": None, "nmae_pct": None}
+                "p90_abs": None, "max_abs": None, "max_over": None, "max_under": None, "nmae_pct": None}
     abs_e = e.abs()
     out = {
         "n": int(e.size),
@@ -83,6 +83,9 @@ def metrics(error: pd.Series, actual: pd.Series | None = None) -> dict:
         "p50_abs": num(abs_e.quantile(0.5)),
         "p90_abs": num(abs_e.quantile(0.9)),
         "max_abs": num(abs_e.max()),
+        # largest over-forecast (wind below forecast) and under-forecast (wind above forecast)
+        "max_over": num(max(e.max(), 0.0)),
+        "max_under": num(max(-e.min(), 0.0)),
         "nmae_pct": None,
     }
     if actual is not None:
@@ -410,6 +413,24 @@ def _accuracy_report(p: Prepared, gate: time) -> dict:
                  for _, g in adj.groupby("decision_day") if g["actual"].sum() > 0]
     adjusted["median_abs_energy_error_pct"] = num(float(np.median(np.abs(adj_daily)))) if adj_daily else None
     overall["adjusted"] = adjusted
+
+    # Energy the buyer would have been short or long by, relying on each forecast.
+    def short_long(err: pd.Series) -> dict:
+        e = err.dropna()
+        return {"short_mwh": num(e.clip(lower=0).sum() * step, 0),
+                "long_mwh": num((-e).clip(lower=0).sum() * step, 0)}
+    overall["imbalance"] = {"raw": short_long(scored["error"]), "adjusted": short_long(adj["adjusted_error"])}
+
+    # Share of periods over-forecast, under-forecast, or within 5% of outturn.
+    tol = 0.05 * scored["actual"].abs()
+    within = scored["error"].abs() <= tol
+    n = len(scored)
+    overall["error_split"] = {
+        "tolerance_pct": 5,
+        "over_pct": num(100 * ((scored["error"] > tol)).sum() / n) if n else None,
+        "under_pct": num(100 * ((scored["error"] < -tol)).sum() / n) if n else None,
+        "within_pct": num(100 * within.sum() / n) if n else None,
+    }
 
     # error by UK hour of day
     local_hour = scored["start_time"].dt.tz_convert(config.UK_TZ).dt.hour

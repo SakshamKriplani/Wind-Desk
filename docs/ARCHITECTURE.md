@@ -67,6 +67,12 @@ errors that grow with lead time. If synthetic data is ever loaded by the app, a 
 - Business assumptions live in `config.py` (gate time, windows, quantiles), not scattered in code.
 - Analytics are pure functions of a `Dataset`, so they are testable without HTTP.
 - Typed API boundary: `frontend/src/types.ts` mirrors the backend responses.
+- Split of work between server and client: the backend owns everything that needs history and the
+  no-lookahead rule (forecast selection, range, bias, accuracy). The client owns everything driven by
+  the trader's own inputs (risk, demand, prices, edits) in `calc.ts`, so sliders recalculate with no
+  round trip. `calc.ts` is pure and unit-tested; React components only display its output.
+- One state container (`TerminalStateContext`) holds selections, parameters, edits and routing, so
+  every view and the hotkey handler read the same state.
 - All times are UTC internally and in the API; the UI converts to UK time with `Intl` (GMT/BST safe).
 - CI runs backend tests, frontend tests and build, and the Docker build on every push.
 
@@ -82,3 +88,5 @@ errors that grow with lead time. If synthetic data is ever loaded by the app, a 
 - Forecast and outturn are joined on `startTime`. If WINDFOR is hourly and outturn half-hourly, each
   hourly forecast is compared with the half-hour starting on the hour.
 - No authentication; it is a pilot on public data.
+- Prices, penalties and capacity in the terminal are user assumptions, not market data. A real
+  deployment would pull day-ahead and imbalance prices from the same Elexon API.

@@ -53,7 +53,7 @@ API docs are at http://localhost:8000/docs.
 
 ```bash
 cd backend && pytest          # 26 tests: selection logic, no-lookahead guarantees, metrics, API, ingestion
-cd frontend && npm test       # formatting helpers
+cd frontend && npm test       # 25 tests: trading calculations (calc.ts) and formatting
 ```
 
 ---
@@ -83,6 +83,40 @@ git push heroku main
 
 ---
 
+## Using the terminal
+
+Four views, switched with **H** or the breadcrumb. Routes are `#/terminal/<view>/<decision day>`.
+
+| View | What it is for |
+| --- | --- |
+| **Day-Ahead Brief** | The gate-closure screen: P50, P10, P90 and bias-adjusted wind for the delivery day, wind to count on at your risk setting, the day-ahead buy, expected imbalance cost, generation profile chart and a compact ledger. |
+| **Settlement Ledger** | All 48 settlement periods grouped into overnight, peak and late blocks. Forecast and contracted cells are editable; each row can be re-priced or auto-balanced. Totals in the footer. |
+| **Accuracy Matrix** | January accuracy at the chosen gate: WAPE, bias, band hit rate, imbalance loss with and without bias adjustment, horizon table with status, error split and a delivery-day summary. |
+| **Scenario Sandbox** | Price scenario, penalty and a wind ramp-down event; drag the purchase volume and see P&L, strategy comparison and cashout transactions, plus a January backtest. |
+
+Keys: **F2** date, **F3** gate (09:20, 09:50, 11:00, 12:00), **F4** recalculate, **F5** 48 SP or 24 h,
+**F6** 20% wind stress, **F7** raw or bias-adjusted hedge, **F8** export CSV, **B** basis (MWh, capacity
+factor, £), **Z** risk, **O** show actuals, **M** demo jitter, **L** save scenario, **F12** configure,
+**Alt+G** go to, **↑ ↓ Enter** move and drill down, **← →** move between tiles, **Esc / Q** back.
+F1 opens the full list. Browsers reserve some function keys (F12 opens developer tools in most), so
+every key also has a clickable button.
+
+**Live Recalc** applies every input change immediately. Turn it off to stage several changes, then
+press F4 or ⚡ Recalc.
+
+How the trading numbers are built (all in `calc.ts`):
+
+- Wind counted on = hedge forecast minus risk × (hedge forecast − P10). Risk 0% relies on the
+  forecast, 100% on the P10 floor.
+- Contracted volume = demand − wind counted on, unless edited.
+- Expected shortfall treats outturn as normal around the bias-adjusted forecast, with spread taken
+  from the P10 to P90 range. Expected imbalance cost = shortfall × penalty + surplus × spill discount.
+- The sandbox settles each strategy against real outturn: short volume costs the day-ahead price
+  plus the penalty, and surplus is sold at the day-ahead price minus the spill discount.
+- Forecasts are hourly; the 48-SP view interpolates them to half-hours. Outturn is half-hourly.
+
+---
+
 ## Requirements and how the app meets them
 
 The brief sets two requirements. Everything else in the app either serves one of them or is listed
@@ -90,11 +124,11 @@ under "Added beyond the brief" with the reason it is there.
 
 | Requirement (from the brief) | Where it is met |
 | --- | --- |
-| Understand how much power must be procured beyond wind | **Day-ahead brief > Volume left to buy**: demand minus expected wind, as published, bias-adjusted and in a low-wind case. |
+| Understand how much power must be procured beyond wind | **Day-Ahead Brief**: "wind to count on" and the day-ahead buy (demand minus wind counted on), per settlement period in the **Settlement Ledger**. |
 | Decisions are made one day before delivery | Each decision day D buys for D+1 (00:00 to 24:00 UK). The timeline strip shows decision day, gate closure and delivery day. |
-| 1. Clearly understand the **latest** forecast **available when the decision is made** | **Day-ahead brief**: for each delivery period, the latest WINDFOR value published at or before gate closure (`latest_forecasts()` in `analytics.py`). The page is framed as the gate-closure screen; anything known only later is hidden by default. |
-| 2. Evaluate forecast accuracy **quantitatively** | **Forecast accuracy**: MAE, RMSE, bias, normalised MAE, 1-in-10 miss, daily energy miss, all over the 31 January decisions, plus error against horizon from 0 to 48 h. |
-| ...so decisions can be made **considering the quantified error** | The measured error flows back into the brief: a callout states the recent bias at this lead time and the bias-adjusted wind figure; the chart shows the bias-adjusted line and the likely range; the volume panel gives the bias-adjusted volume to buy. The accuracy view shows how much this adjustment would have helped across January. |
+| 1. Clearly understand the **latest** forecast **available when the decision is made** | **Day-Ahead Brief**: for each delivery period, the latest WINDFOR value published at or before gate closure (`latest_forecasts()` in `analytics.py`). The screen shows what was known at gate closure; outturn is hidden unless you press O. |
+| 2. Evaluate forecast accuracy **quantitatively** | **Accuracy Matrix**: WAPE, MAE, RMSE, bias, normalised MAE, 1-in-10 miss, daily energy miss, all over the 31 January decisions, plus error against horizon from 0 to 48 h. |
+| ...so decisions can be made **considering the quantified error** | The measured error flows back into the decision: the hedge is built on the bias-adjusted forecast (F7 toggles raw), the risk slider moves the volume counted on towards the P10 floor, and expected shortfall uses the P10 to P90 spread. The Accuracy Matrix and Scenario Sandbox show what the adjustment would have saved across January. |
 | Data: FUELHH (WIND) and WINDFOR only, for January 2026 decisions | `elexon.py` and `store.py`. No other data source is used. |
 | React frontend, Python backend, Docker, Vercel or Heroku | React + TypeScript (Vite), FastAPI + pandas, `Dockerfile` and `docker-compose.yml`, `vercel.json` and `heroku.yml`. |
 
@@ -108,7 +142,12 @@ under "Added beyond the brief" with the reason it is there.
 | Earlier forecast runs on the chart | Shows whether the forecast has been moving between runs, a common question before committing volume. |
 | "What actually happened" (off by default) | Lets the client judge any single day. It is hindsight, so it is hidden unless asked for and never used in a decision. |
 | Error by hour of day, error distribution, daily energy misses, plain-language takeaways | Different cuts of requirement 2 for different readers: when in the day the forecast is weakest, how skewed errors are, which days hurt, and a summary a non-analyst can act on. |
-| Explorer view | Not a requirement. A tool for ad-hoc checks of actual against forecast at any horizon and date range. |
+| Terminal-style UI (dense ledger, F-key rail, keyboard navigation) | Built to a separate UI specification (`docs/TALLY_TERMINAL_REDESIGN_SPEC.md`) so the tool feels like desk software. The visual style is inspired by accounting terminals; it does not use any third-party product name or logo. |
+| Risk slider, demand, prices, penalty and spill rates | The brief gives only wind data. These are user inputs (F12) so the desk can turn wind numbers into a position and a cost. They are labelled as assumptions everywhere they appear. |
+| Settlement Ledger with editable cells | Lets a trader override the forecast or contracted volume for any settlement period and see the effect immediately. |
+| Scenario Sandbox and January backtest | Settles the raw, bias-adjusted and P10 hedges against real outturn under a chosen price scenario, for one day and for every January decision. |
+| Demo jitter (M), off by default | Requested for live demos. It nudges forecast values every 8 seconds and shows a red SIMULATED badge while on. It is not real data. |
+| Earlier versions had an Explorer view | Dropped in the terminal redesign; the Accuracy Matrix covers error by horizon. |
 | Error history from mid-December | The range and bias for 1 January decisions need 14 days of prior errors. This data is used only as history, never scored. |
 
 ---
@@ -178,17 +217,27 @@ published after gate closure and checks the decision output does not change.
 │   └── requirements-dev.txt   Runtime plus test dependencies
 ├── data/                      CSV snapshot of the Elexon data (see data/README.md)
 ├── docs/
-│   └── ARCHITECTURE.md        Design notes for technical review
+│   ├── ARCHITECTURE.md        Design notes for technical review
+│   └── TALLY_TERMINAL_REDESIGN_SPEC.md  UI specification for the terminal redesign
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx            Shell, navigation, hash routing
+│   │   ├── App.tsx            Loads metadata, mounts the terminal and the current view
 │   │   ├── api.ts             Typed API client
 │   │   ├── types.ts           Response types matching the backend
-│   │   ├── format.ts          Number, time (UK) and CSV helpers, with tests
+│   │   ├── calc.ts            Client-side trading maths: settlement periods, hedge, expected
+│   │   │                      shortfall, cashout, strategy backtest (tests in calc.test.ts)
+│   │   ├── format.ts          Number, money, time (UK) and CSV helpers (tests in format.test.ts)
 │   │   ├── hooks.ts           useAsync data-loading hook
-│   │   ├── components/        Decision timeline, figures row, tooltip, status messages
-│   │   ├── views/             BriefView, AccuracyView, ExploreView
-│   │   └── styles.css         Design tokens and layout (light and dark)
+│   │   ├── context/
+│   │   │   └── TerminalStateContext.tsx  Day, gate, parameters, edits, routing, scenarios
+│   │   ├── components/
+│   │   │   ├── tally/         Shell, F-key rail, ledger table, tiles, inputs, badges, drawers,
+│   │   │   │                  live-flashing numbers
+│   │   │   └── charts/        Generation profile, bar chart, P&L gauge
+│   │   ├── views/             TerminalBriefView, TerminalLedgerView, TerminalAccuracyView,
+│   │   │                      TerminalSimulatorView
+│   │   └── styles/
+│   │       └── tally-terminal.css  Terminal design system (colours, borders, type)
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.ts

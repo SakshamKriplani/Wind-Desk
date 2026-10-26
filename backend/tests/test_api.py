@@ -36,6 +36,10 @@ def test_accuracy(client):
     assert 40 <= len(body["by_horizon"]) <= 49
     assert all(h["n"] > 0 for h in body["by_horizon"])
     assert body["summary"]["adjusted"]["mae"] < body["summary"]["mae"]
+    split = body["summary"]["error_split"]
+    assert abs(split["over_pct"] + split["under_pct"] + split["within_pct"] - 100) < 0.5
+    imb = body["summary"]["imbalance"]
+    assert imb["raw"]["short_mwh"] > imb["raw"]["long_mwh"]  # synthetic forecasts lean high
     assert body["summary"]["mae"] > 0
     # error should broadly grow with horizon
     h = body["by_horizon"]

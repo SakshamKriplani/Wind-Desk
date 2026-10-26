@@ -8,6 +8,8 @@ export interface Metrics {
   p50_abs: number | null;
   p90_abs: number | null;
   max_abs: number | null;
+  max_over: number | null;
+  max_under: number | null;
   nmae_pct: number | null;
 }
 
@@ -104,6 +106,8 @@ export interface Accuracy {
     days_over_forecast?: number;
     median_abs_energy_error_pct?: number | null;
     adjusted: Metrics & { median_abs_energy_error_pct: number | null };
+    imbalance: Record<"raw" | "adjusted", { short_mwh: number; long_mwh: number }>;
+    error_split: { tolerance_pct: number; over_pct: number; under_pct: number; within_pct: number };
   };
   daily: DailyAccuracy[];
   by_hour: { hour: number; mae: number | null; bias: number | null; n: number }[];

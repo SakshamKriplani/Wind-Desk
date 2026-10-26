@@ -13,6 +13,7 @@ def test_metrics_known_values():
     assert m["rmse"] == round((50000) ** 0.5, 1)
     assert m["nmae_pct"] == 20.0
     assert m["max_abs"] == 300.0
+    assert m["max_over"] == 300.0 and m["max_under"] == 300.0
 
 
 def test_metrics_empty():
