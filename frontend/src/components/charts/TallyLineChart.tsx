@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { Row } from "../../calc";
 import { int, time } from "../../format";
@@ -12,15 +13,44 @@ interface Props {
   selected: number | null;
   height?: number;
   onPick?: (t: number) => void;
+  /** before the first calculation: axes and grid only, with a watermark */
+  empty?: boolean;
+  watermark?: ReactNode;
+  /** draw the lines in from left to right (first reveal only) */
+  animate?: boolean;
 }
 
 /** Generation profile: raw forecast, bias-adjusted, P10-P90 cloud, wind counted on, outturn. */
-export function TallyLineChart({ rows, start, end, showActual, selected, height = 300, onPick }: Props) {
+const DRAW_MS = 750;
+
+export function TallyLineChart({ rows, start, end, showActual, selected, height = 300, onPick, empty, watermark, animate }: Props) {
+  const ticks = Array.from({ length: 7 }, (_, i) => start + i * 4 * 3600e3);
+  const xTick = (v: number) => (v >= end ? "24:00" : time(v));
+
+  if (empty) {
+    return (
+      <div className="t-chart-empty" style={{ height: height + 26 }}>
+        <ResponsiveContainer width="100%" height={height}>
+          <ComposedChart data={[{ ts: start, y: 0 }, { ts: end, y: 16000 }]} margin={{ top: 32, right: 10, bottom: 0, left: 0 }}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="2 4" />
+            <XAxis dataKey="ts" type="number" scale="time" domain={[start, end]} ticks={ticks}
+              tickFormatter={xTick} stroke="#7d9cbb" tick={{ fontSize: 11 }} />
+            <YAxis width={64} stroke="#7d9cbb" tick={{ fontSize: 11 }} domain={[0, 16000]}
+              ticks={[0, 4000, 8000, 12000, 16000]} tickFormatter={(v) => `${int(v)} MW`} />
+            {/* invisible series so the Y axis renders its scale */}
+            <Line dataKey="y" stroke="none" dot={false} activeDot={false} isAnimationActive={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+        <div className="t-watermark">{watermark}</div>
+      </div>
+    );
+  }
+
+  const anim = { isAnimationActive: !!animate, animationDuration: DRAW_MS, animationEasing: "ease-out" as const };
   const data = rows.map((r) => ({
     ts: r.t, raw: r.forecast, adj: r.adjusted, band: [r.floor, r.ceil] as [number, number],
     counted: r.counted, actual: r.actual, base: r.base,
   }));
-  const ticks = Array.from({ length: 9 }, (_, i) => start + i * 3 * 3600e3);
   return (
     <>
       <ul className="t-legend">
@@ -35,7 +65,7 @@ export function TallyLineChart({ rows, start, end, showActual, selected, height 
           onClick={(e) => { const ts = (e as { activePayload?: { payload: { ts: number } }[] })?.activePayload?.[0]?.payload.ts; if (ts != null) onPick?.(ts); }}>
           <CartesianGrid stroke={C.grid} vertical={false} />
           <XAxis dataKey="ts" type="number" scale="time" domain={[start, end]} ticks={ticks}
-            tickFormatter={(v) => time(v)} stroke="#7d9cbb" tick={{ fontSize: 11 }} />
+            tickFormatter={xTick} stroke="#7d9cbb" tick={{ fontSize: 11 }} />
           <YAxis width={52} stroke="#7d9cbb" tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
           {selected != null && <ReferenceLine x={selected} stroke="#f8b819" strokeWidth={2} />}
           <Tooltip
@@ -56,11 +86,12 @@ export function TallyLineChart({ rows, start, end, showActual, selected, height 
               );
             }}
           />
-          <Area dataKey="band" stroke="none" fill={C.band} fillOpacity={0.5} isAnimationActive={false} />
-          <Line dataKey="raw" stroke={C.raw} strokeWidth={1.8} strokeDasharray="5 3" dot={false} isAnimationActive={false} />
-          <Line dataKey="counted" stroke={C.counted} strokeWidth={1.4} dot={false} isAnimationActive={false} />
-          <Line dataKey="adj" stroke={C.adj} strokeWidth={2.5} dot={false} isAnimationActive={false} />
-          {showActual && <Line dataKey="actual" stroke={C.actual} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />}
+          {/* the range fades in as the lines finish drawing */}
+          <Area dataKey="band" stroke="none" fill={C.band} fillOpacity={0.5} {...anim} animationBegin={animate ? DRAW_MS * 0.6 : 0} />
+          <Line dataKey="raw" stroke={C.raw} strokeWidth={1.8} strokeDasharray="5 3" dot={false} {...anim} />
+          <Line dataKey="counted" stroke={C.counted} strokeWidth={1.4} dot={false} {...anim} />
+          <Line dataKey="adj" stroke={C.adj} strokeWidth={2.5} dot={false} {...anim} />
+          {showActual && <Line dataKey="actual" stroke={C.actual} strokeWidth={2} dot={false} connectNulls {...anim} />}
         </ComposedChart>
       </ResponsiveContainer>
     </>

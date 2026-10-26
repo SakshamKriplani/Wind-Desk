@@ -73,6 +73,13 @@ errors that grow with lead time. If synthetic data is ever loaded by the app, a 
   round trip. `calc.ts` is pure and unit-tested; React components only display its output.
 - One state container (`TerminalStateContext`) holds selections, parameters, edits and routing, so
   every view and the hotkey handler read the same state.
+- Calculation pipeline: the context separates what the user has selected (day, gate) from what has
+  been committed for calculation. Committing loads the decision, then `pipeline.ts` schedules the
+  reveal steps (`initializing` → `computing_metrics` → `drawing_charts` → `populating_table` →
+  `ready`). Views decide what to show from that status. The staging has a minimum duration for
+  readability and can be switched to Instant; a slow fetch eats into it rather than adding to it.
+  Status text describes real steps and the READY line reports measured timings and a runtime
+  no-lookahead check, so the UI never claims work it did not do.
 - All times are UTC internally and in the API; the UI converts to UK time with `Intl` (GMT/BST safe).
 - CI runs backend tests, frontend tests and build, and the Docker build on every push.
 

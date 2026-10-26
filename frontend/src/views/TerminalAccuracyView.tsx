@@ -22,10 +22,39 @@ const dayStatus = (pctMiss: number | null): [BadgeTone, string] => {
 
 export function TerminalAccuracyView() {
   const t = useTerminal();
-  const acc = useAsync(() => api.accuracy(t.gate), [t.gate]);
+  const gate = t.committed?.gate ?? null;
+  const acc = useAsync(() => (gate ? api.accuracy(gate) : Promise.resolve(null)), [gate]);
   if (acc.error) return <p className="t-empty t-neg">Could not load accuracy: {acc.error}</p>;
-  if (!acc.data) return <p className="t-empty">Scoring every January decision at {t.gate}…</p>;
+  if (!acc.data || t.calcStatus !== "ready") return <MatrixSkeleton />;
   return <Matrix a={acc.data} />;
+}
+
+/** Layout of the matrix with dashes, shown until a calculation has run. */
+function MatrixSkeleton() {
+  const t = useTerminal();
+  const labels = ["Overall WAPE", "Systematic bias", "Band hit rate (P10–P90)", "Total imbalance loss", "With bias adjustment", "Days over-forecast"];
+  const cols: Column<number>[] = ["HORIZON", "SAMPLES (N)", "MAE (MW)", "RMSE (MW)", "BIAS (MW)", "WORST OVER-FCST (MW)", "WORST UNDER-FCST (MW)", "nMAE", "STATUS"]
+    .map((h, i) => ({ key: String(i), header: h, align: i === 0 ? "left" : i === 8 ? "center" : "right", render: () => null }));
+  const horizons = ["1 hour ahead", "4 hours ahead", "Day-ahead gate", "24 hours ahead", "36 hours ahead"];
+  const busy = t.calcStatus !== "empty";
+  return (
+    <div className="t-view">
+      <dl className="t-ribbon">
+        {labels.map((l) => (
+          <div key={l}><dt>{l}</dt><dd className="t-placeholder">---</dd><small>{busy ? "[Computing…]" : "[Awaiting calculation]"}</small></div>
+        ))}
+      </dl>
+      <TallyTile title="Lead-time horizon performance"
+        actions={!busy && <button type="button" className="t-exec" onClick={t.compute}>⚡ Execute Calculation <kbd>F4</kbd></button>}>
+        <TallyTable caption="Horizon performance" columns={cols} groups={[]} rowKey={(r) => r} selected={null} onSelect={() => undefined}
+          placeholder={{
+            rows: horizons.length,
+            cell: (i, key) => (key === "0" ? horizons[i] : key === "8" ? (busy ? "Computing…" : "Awaiting calc") : undefined),
+            footer: busy ? "Scoring every January decision at the chosen gate…" : "Accuracy is scored for all 31 January decisions once you run the calculation.",
+          }} />
+      </TallyTile>
+    </div>
+  );
 }
 
 function Matrix({ a }: { a: Accuracy }) {
@@ -90,27 +119,27 @@ function Matrix({ a }: { a: Accuracy }) {
       <dl className="t-ribbon">
         <div>
           <dt>Overall WAPE</dt>
-          <dd><Num value={s.nmae_pct} format={(v) => pct(v, 1)} /></dd>
+          <dd><Num countUp value={s.nmae_pct} format={(v) => pct(v, 1)} /></dd>
           <small>sum |error| / sum actual, {s.days} decisions at {a.gate_closure}</small>
         </div>
         <div>
           <dt>Systematic bias</dt>
-          <dd className={(s.bias ?? 0) > 0 ? "t-neg" : "t-pos"}><Num value={s.bias} format={(v) => signed(v, "MW")} /></dd>
+          <dd className={(s.bias ?? 0) > 0 ? "t-neg" : "t-pos"}><Num countUp value={s.bias} format={(v) => signed(v, "MW")} /></dd>
           <small>{(s.bias ?? 0) > 0 ? "over-forecasting: wind came in lower" : "under-forecasting"}</small>
         </div>
         <div>
           <dt>Band hit rate (P10–P90)</dt>
-          <dd><Num value={s.band_coverage_pct} format={(v) => pct(v, 1)} /></dd>
+          <dd><Num countUp value={s.band_coverage_pct} format={(v) => pct(v, 1)} /></dd>
           <small>target 80%</small>
         </div>
         <div>
           <dt>Total imbalance loss</dt>
-          <dd className="t-neg"><Num value={-lossRaw} format={gbp} delta={(d) => gbp(d)} /></dd>
+          <dd className="t-neg"><Num countUp value={-lossRaw} format={gbp} delta={(d) => gbp(d)} /></dd>
           <small>raw forecast; £{p.penalty} short, £{p.longRate} spill (F12)</small>
         </div>
         <div className="t-ribbon-key">
           <dt>With bias adjustment</dt>
-          <dd className="t-pos"><Num value={-lossAdj} format={gbp} delta={(d) => gbp(d)} /></dd>
+          <dd className="t-pos"><Num countUp value={-lossAdj} format={gbp} delta={(d) => gbp(d)} /></dd>
           <small>saves {gbp(lossRaw - lossAdj)}; MAE {int(s.adjusted.mae)} vs {int(s.mae)} MW</small>
         </div>
         <div>

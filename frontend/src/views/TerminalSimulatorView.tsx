@@ -64,7 +64,20 @@ export function TerminalSimulatorView() {
   const custom = useMemo(() => runStrategy("custom", periods, scenario, vol), [periods, scenario, vol]);
 
   if (t.decision.error) return <p className="t-empty t-neg">Could not load the decision: {t.decision.error}</p>;
-  if (!d) return <p className="t-empty">Loading the sandbox…</p>;
+  if (!d || t.calcStatus !== "ready") {
+    return (
+      <div className="t-view">
+        <TallyTile title="Scenario sandbox">
+          <p className="t-empty">
+            {t.calcStatus === "empty"
+              ? "The sandbox settles trades against the loaded decision. Run the calculation first."
+              : `⟳ ${t.calcStep}`}
+          </p>
+          {t.calcStatus === "empty" && <button type="button" className="t-exec" onClick={t.compute}>⚡ Execute Calculation <kbd>F4</kbd></button>}
+        </TallyTile>
+      </div>
+    );
+  }
   if (!base.raw || !custom) {
     return <p className="t-empty">Outturn for this delivery day is incomplete, so the sandbox cannot settle trades. Pick another day (F2).</p>;
   }
@@ -185,7 +198,8 @@ export function TerminalSimulatorView() {
 /** The three rule-based strategies over every January decision, under the same scenario. */
 function MonthBacktest({ scenario }: { scenario: Scenario }) {
   const t = useTerminal();
-  const all = useAsync(() => Promise.all(t.meta.decision_days.map((d) => api.decision(d, t.gate))), [t.gate]);
+  const gate = t.committed?.gate ?? t.gate;
+  const all = useAsync(() => Promise.all(t.meta.decision_days.map((d) => api.decision(d, gate))), [gate]);
   const summary = useMemo(() => {
     if (!all.data) return null;
     const ids: StrategyId[] = ["raw", "adjusted", "p10"];
@@ -205,7 +219,7 @@ function MonthBacktest({ scenario }: { scenario: Scenario }) {
   }, [all.data, scenario]);
 
   return (
-    <TallyTile span={2} title={`January backtest: all decisions at ${t.gate}, same scenario (hourly)`}>
+    <TallyTile span={2} title={`January backtest: all decisions at ${gate}, same scenario (hourly)`}>
       {!summary ? <p className="t-note">Loading 31 decisions…</p> : (
         <table className="t-table">
           <thead><tr>

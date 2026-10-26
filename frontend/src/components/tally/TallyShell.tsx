@@ -81,6 +81,11 @@ function useHotkeys() {
         act();
         return;
       }
+      if (e.key === "Enter" && t.calcStatus === "empty" && !(e.target as HTMLElement).closest?.(".t-table-wrap")) {
+        e.preventDefault();
+        t.compute();
+        return;
+      }
       if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !(e.target as HTMLElement).closest?.(".t-table-wrap")) {
         const tiles = [...document.querySelectorAll<HTMLElement>("[data-tile]")];
         if (!tiles.length) return;
@@ -93,6 +98,52 @@ function useHotkeys() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [t, main, secondary]);
+}
+
+/** Pipeline status: what is being computed now, or measured stats once ready. */
+function CalcStrip() {
+  const t = useTerminal();
+  const s = t.calcStats;
+  const busy = t.calcStatus !== "empty" && t.calcStatus !== "ready";
+  let body: ReactNode;
+  if (t.decision.error) {
+    body = <span className="t-neg">✕ Calculation failed: {t.decision.error}. Check the API, then press F4.</span>;
+  } else if (t.calcStatus === "empty") {
+    body = (
+      <>
+        <span>◌ Terminal initialised. Select a decision day (delivery {addDays(t.day, 1)} is suggested) and run the calculation.</span>
+        <button type="button" className="t-exec" onClick={t.compute}>⚡ Execute Calculation <kbd>F4</kbd></button>
+      </>
+    );
+  } else if (busy) {
+    body = <span>⟳ COMPUTING: {t.calcStep} ({t.calcProgress}%)</span>;
+  } else if (t.rehedging) {
+    body = <span>⟳ RE-HEDGING: applying risk, demand and price inputs to the loaded forecast…</span>;
+  } else {
+    body = (
+      <>
+        <span>
+          ● READY {" "}<span className="t-sep">|</span>{" "} {s ? `${s.rows} periods` : "–"}
+          {" "}<span className="t-sep">|</span>{" "} data {s ? Math.round(s.fetchMs) : "–"} ms, maths {s ? (s.mathMs < 0.1 ? "<0.1" : s.mathMs.toFixed(1)) : "–"} ms
+          {t.staged && s ? `, shown over ${(s.totalMs / 1000).toFixed(2)} s` : ""}
+          {" "}<span className="t-sep">|</span>{" "} {t.meta.forecast_rows.toLocaleString("en-GB")} forecast rows in snapshot
+          {" "}<span className="t-sep">|</span>{" "} No-lookahead check:{" "}
+          {s ? (s.lookaheadOk
+            ? <b className="t-ok">passed</b>
+            : <b className="t-neg">FAILED</b>) : "–"}
+          {s ? `, all ${s.checked} forecast timestamps ≤ ${t.committed?.gate} UK` : ""}
+          {s?.heapMb != null && <>{" "}<span className="t-sep">|</span>{" "} JS heap {s.heapMb} MB</>}
+        </span>
+        <button type="button" className="t-exec" onClick={t.compute}>⚡ Recompute Model <kbd>F4</kbd></button>
+      </>
+    );
+  }
+  return (
+    <div className={`t-calc ${busy || t.rehedging ? "t-calc-busy" : ""} t-calc-${t.calcStatus}`} role="status" aria-live="polite">
+      <div className="t-calc-bar" style={{ width: `${t.rehedging ? 100 : t.calcProgress}%` }} />
+      <div className="t-calc-text">{body}</div>
+    </div>
+  );
 }
 
 export function TallyShell({ children }: { children: ReactNode }) {
@@ -136,8 +187,8 @@ export function TallyShell({ children }: { children: ReactNode }) {
         </button>
         <div className="t-ticker" aria-label="Status ticker">
           <span className="t-dot" /> SNAPSHOT {t.meta.fetched_at ? dayTime(t.meta.fetched_at) : "–"}
-          <span className="t-sep">|</span> RUN {run ? time(run) : "–"}
-          <span className="t-sep">|</span> NEXT {t.gate} GATE IN <b>{countdown(nextUkTime(t.gate, now) - now)}</b>
+          {" "}<span className="t-sep">|</span>{" "} RUN {run ? time(run) : "–"}
+          {" "}<span className="t-sep">|</span>{" "} NEXT {t.gate} GATE IN <b>{countdown(nextUkTime(t.gate, now) - now)}</b>
         </div>
       </header>
 
@@ -162,6 +213,8 @@ export function TallyShell({ children }: { children: ReactNode }) {
           {pill("F1", "Help", () => t.setDrawer({ kind: "help" }))}
         </div>
       </div>
+
+      <CalcStrip />
 
       <div className="t-body">
         <main className="t-main" id="main">{children}</main>

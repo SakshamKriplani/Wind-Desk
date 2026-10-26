@@ -136,6 +136,23 @@ function Config() {
         Likely range quantiles: P{Math.round(t.meta.band_quantiles[0] * 100)} to P{Math.round(t.meta.band_quantiles[1] * 100)},
         from the previous {t.meta.error_lookback_days} days of errors (set in the backend).
       </p>
+      <h3>Calculation display</h3>
+      <label className="t-field">
+        <span className="t-field-label">Reveal results</span>
+        <select value={t.staged ? "staged" : "instant"} onChange={(e) => t.setStaged(e.target.value === "staged")}>
+          <option value="staged">Staged, step by step (about 1.4 s)</option>
+          <option value="instant">Instant, as soon as data loads</option>
+        </select>
+      </label>
+      <p className="t-muted">
+        Staging is a presentation choice: the maths itself runs in milliseconds, and the status strip reports
+        the measured times either way.
+      </p>
+      <div className="t-drawer-actions">
+        <button type="button" className="t-btn" onClick={() => { t.resetToEmpty(); t.setDrawer(null); }}>
+          Reset terminal to empty state
+        </button>
+      </div>
       <h3>Saved scenarios <kbd>L</kbd></h3>
       {t.scenarios.length === 0 && <p className="t-muted">None yet. Press L to save the current setup.</p>}
       <ul className="t-goto-list">

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 export interface BarSeries {
@@ -17,14 +18,20 @@ interface Props<D> {
   format?: (v: number) => string;
   labels?: boolean;
   categoryWidth?: number;
+  /** before the first calculation: axes and categories only, with a watermark */
+  empty?: boolean;
+  watermark?: ReactNode;
+  /** grow the bars on first reveal */
+  animate?: boolean;
 }
 
 /** Sky-blue bar chart with a zero baseline, vertical or horizontal. */
 export function TallyBarChart<D extends object>({
   data, category, series, horizontal, height = 220, format = (v) => v.toLocaleString("en-GB"), labels, categoryWidth = 120,
+  empty, watermark, animate,
 }: Props<D>) {
   return (
-    <>
+    <div className={empty ? "t-chart-empty" : undefined}>
       {series.length > 1 && (
         <ul className="t-legend">
           {series.map((s) => <li key={s.key}><i className="t-legend-box" style={{ background: s.color }} />{s.label}</li>)}
@@ -62,13 +69,15 @@ export function TallyBarChart<D extends object>({
               );
             }} />
           {series.map((s) => (
-            <Bar key={s.key} dataKey={s.key} fill={s.color} isAnimationActive={false}>
+            <Bar key={s.key} dataKey={s.key} fill={s.color} isAnimationActive={!!animate} animationDuration={600}
+              hide={empty}>
               {s.colorBy && data.map((d, i) => <Cell key={i} fill={s.colorBy!(Number((d as Record<string, unknown>)[s.key]))} />)}
               {labels && <LabelList dataKey={s.key} position={horizontal ? "right" : "top"} formatter={(v: unknown) => format(Number(v))} className="t-barlabel" />}
             </Bar>
           ))}
         </BarChart>
       </ResponsiveContainer>
-    </>
+      {empty && <div className="t-watermark">{watermark}</div>}
+    </div>
   );
 }

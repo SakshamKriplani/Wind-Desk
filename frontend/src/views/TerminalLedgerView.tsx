@@ -4,6 +4,7 @@ import { Num } from "../components/tally/Num";
 import { TallyBadge } from "../components/tally/TallyBadge";
 import { TallyTable, type Column, type Group } from "../components/tally/TallyTable";
 import { useTerminal } from "../context/TerminalStateContext";
+import { atLeast } from "../pipeline";
 import { addDays, gbp, int } from "../format";
 import { BasisCell, basisUnit, shortClass } from "./shared";
 
@@ -41,8 +42,11 @@ export function TerminalLedgerView() {
   const { rows, tot, applied: p, basis } = t;
   const d = t.decision.data;
 
-  if (t.decision.error) return <p className="t-empty t-neg">Could not load the decision: {t.decision.error}</p>;
-  if (!d) return <p className="t-empty">Loading the settlement ledger…</p>;
+  const tableOn = !!d && atLeast(t.calcStatus, "populating_table");
+  const n = t.detailed ? 48 : 24;
+  const axisDay = t.committed?.day ?? t.day;
+  // January: UK time equals UTC, so the delivery day starts at 00:00Z
+  const start = d ? new Date(d.delivery_start).getTime() : Date.parse(`${addDays(axisDay, 1)}T00:00:00Z`);
 
   const reprice = (r: Row) => {
     t.recalc();
@@ -123,7 +127,7 @@ export function TerminalLedgerView() {
   return (
     <div className="t-view">
       <div className="t-ledger-head">
-        <h1>Settlement period blotter, delivery {addDays(t.day, 1)}</h1>
+        <h1>Settlement period blotter, delivery {addDays(axisDay, 1)}</h1>
         <div className="t-toolbar">
           <span>Basis <TallyBadge tone="info">{basis}</TallyBadge> <kbd>B</kbd></span>
           <span>Rows <TallyBadge tone="info">{t.detailed ? "48 SP" : "24 h"}</TallyBadge> <kbd>F5</kbd></span>
@@ -146,7 +150,25 @@ export function TerminalLedgerView() {
         onSelect={(k) => t.setSelected(k as number)}
         onActivate={(r) => t.setDrawer({ kind: "inspect", t: r.t })}
         rowClass={(r) => [r.t === flash ? "t-row-flash" : "", r.edited || t.overrides[r.t]?.contracted != null ? "t-edited" : ""].join(" ")}
-        maxHeight="calc(100vh - 250px)"
+        maxHeight="calc(100vh - 280px)"
+        placeholder={tableOn ? undefined : {
+          rows: 12,
+          cell: (i, key) => {
+            if (key === "sp") return String(i + 1).padStart(2, "0");
+            if (key === "slot") return slotLabel(start + i * (t.detailed ? 1800e3 : 3600e3), t.detailed ? 0.5 : 1);
+            if (key === "act-btns") return t.calcStatus === "empty" ? "Awaiting calc" : "Computing…";
+            return undefined;
+          },
+          footer: (
+            <span className="t-skel-foot">
+              Rows: 0/{n} computed | Net exposure: £0.00
+              {t.calcStatus === "empty" && (
+                <button type="button" className="t-exec" onClick={t.compute}>⚡ Execute Calculation <kbd>F4</kbd></button>
+              )}
+            </span>
+          ),
+        }}
+        cascade={t.calcStatus === "populating_table"}
         footer={{
           sp: "TOTAL",
           slot: `${rows.length} rows`,

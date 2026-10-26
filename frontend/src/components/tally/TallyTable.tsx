@@ -30,6 +30,11 @@ interface Props<R> {
   caption?: string;
   maxHeight?: number | string;
   rowClass?: (r: R) => string | undefined;
+  /** before data exists: this many dashed placeholder rows, with optional cell overrides */
+  placeholder?: { rows: number; cell?: (i: number, key: string) => ReactNode; footer?: ReactNode };
+  /** rows slide in one after another (used when results first populate) */
+  cascade?: boolean;
+  cascadeStepMs?: number;
 }
 
 /**
@@ -38,6 +43,7 @@ interface Props<R> {
  */
 export function TallyTable<R>({
   columns, groups, rowKey, selected, onSelect, onActivate, footer, flat, caption, maxHeight, rowClass,
+  placeholder, cascade, cascadeStepMs = 15,
 }: Props<R>) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const wrap = useRef<HTMLDivElement>(null);
@@ -85,6 +91,19 @@ export function TallyTable<R>({
             ))}
           </tr>
         </thead>
+        {placeholder ? (
+          <tbody className="t-skeleton">
+            {Array.from({ length: placeholder.rows }, (_, i) => (
+              <tr key={i}>
+                {columns.map((c, ci) => (
+                  <td key={c.key} style={{ textAlign: c.align ?? "right" }}>
+                    {placeholder.cell?.(i, c.key) ?? (ci === columns.length - 1 ? "Awaiting calc" : "---")}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        ) : (
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.id}>
@@ -103,11 +122,13 @@ export function TallyTable<R>({
               )}
               {!collapsed[g.id] && g.rows.map((r) => {
                 const k = rowKey(r);
+                const order = cascade ? visible.indexOf(r) : -1;
                 return (
                   <tr
                     key={k}
                     data-key={k}
-                    className={`${k === selected ? "t-selected" : ""} ${rowClass?.(r) ?? ""}`}
+                    style={order >= 0 ? { animationDelay: `${order * cascadeStepMs}ms` } : undefined}
+                    className={`${k === selected ? "t-selected" : ""} ${cascade ? "t-row-in" : ""} ${rowClass?.(r) ?? ""}`}
                     onClick={() => onSelect(k)}
                     onDoubleClick={() => onActivate?.(r)}
                   >
@@ -122,7 +143,10 @@ export function TallyTable<R>({
             </Fragment>
           ))}
         </tbody>
-        {footer && (
+        )}
+        {placeholder?.footer != null ? (
+          <tfoot><tr><td colSpan={columns.length} style={{ textAlign: "left" }}>{placeholder.footer}</td></tr></tfoot>
+        ) : footer && !placeholder && (
           <tfoot>
             <tr>
               {columns.map((c) => (

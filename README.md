@@ -53,7 +53,7 @@ API docs are at http://localhost:8000/docs.
 
 ```bash
 cd backend && pytest          # 26 tests: selection logic, no-lookahead guarantees, metrics, API, ingestion
-cd frontend && npm test       # 25 tests: trading calculations (calc.ts) and formatting
+cd frontend && npm test       # 31 tests: trading calculations, calculation pipeline, formatting
 ```
 
 ---
@@ -101,8 +101,21 @@ factor, £), **Z** risk, **O** show actuals, **M** demo jitter, **L** save scena
 F1 opens the full list. Browsers reserve some function keys (F12 opens developer tools in most), so
 every key also has a clickable button.
 
-**Live Recalc** applies every input change immediately. Turn it off to stage several changes, then
-press F4 or ⚡ Recalc.
+**Running a calculation.** The terminal opens empty: dashed figures, chart axes with no curves and
+placeholder ledger rows. Pick a decision day, or press **F4**, **Enter** or **⚡ Execute Calculation**.
+Results then appear in four steps: headline figures (counting up), charts (drawing in), ledger rows
+(cascading), then a READY line. Picking a new day or gate re-runs all four steps. Changing risk,
+demand or prices only re-hedges the loaded forecast (about 0.3 s, flagged "Re-hedging").
+
+The staging is presentation, not processing time: the data loads in tens of milliseconds and the maths
+in under one. The READY line reports those measured times, the rows computed, the browser's JS heap
+where available, and a no-lookahead check run on the forecasts the API returned (every one must be
+published at or before gate closure). **F12 > Reveal results > Instant** turns the staging off, and
+**Reset terminal to empty state** returns to the opening screen. The pipeline logic is in
+`frontend/src/pipeline.ts`, with tests.
+
+**Live Recalc** applies input changes as you make them. Turn it off to stage several changes, then
+press ⚡ Recalc or F4.
 
 How the trading numbers are built (all in `calc.ts`):
 
@@ -218,7 +231,8 @@ published after gate closure and checks the decision output does not change.
 ├── data/                      CSV snapshot of the Elexon data (see data/README.md)
 ├── docs/
 │   ├── ARCHITECTURE.md        Design notes for technical review
-│   └── TALLY_TERMINAL_REDESIGN_SPEC.md  UI specification for the terminal redesign
+│   ├── TALLY_TERMINAL_REDESIGN_SPEC.md  UI specification for the terminal redesign
+│   └── REALISTIC_CALCULATION_ENGINE_SPEC.md  Specification for the staged calculation flow
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx            Loads metadata, mounts the terminal and the current view
@@ -226,6 +240,7 @@ published after gate closure and checks the decision output does not change.
 │   │   ├── types.ts           Response types matching the backend
 │   │   ├── calc.ts            Client-side trading maths: settlement periods, hedge, expected
 │   │   │                      shortfall, cashout, strategy backtest (tests in calc.test.ts)
+│   │   ├── pipeline.ts        Staged calculation steps, measured stats, no-lookahead check (tests)
 │   │   ├── format.ts          Number, money, time (UK) and CSV helpers (tests in format.test.ts)
 │   │   ├── hooks.ts           useAsync data-loading hook
 │   │   ├── context/

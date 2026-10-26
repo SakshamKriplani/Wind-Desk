@@ -10,7 +10,11 @@ import {
   type Basis, type Override, type Params, type Period, type Row, type Totals,
 } from "../calc";
 import { download, toCsv } from "../format";
-import { useAsync, type AsyncState } from "../hooks";
+import type { AsyncState } from "../hooks";
+import {
+  STAGED_MS, checkLookahead, heapMb, progressOf, remainingSchedule, stepMessage,
+  type CalcStats, type CalcStatus,
+} from "../pipeline";
 import type { Decision, Meta } from "../types";
 
 export type View = "brief" | "ledger" | "accuracy" | "simulator";
@@ -28,6 +32,7 @@ export const RISK_PRESETS = [
 ];
 const BASES: Basis[] = ["MWh", "CF%", "£"];
 const JITTER_MS = 8000;
+const REHEDGE_MS = 300;
 const SCENARIO_KEY = "winddesk.scenarios";
 
 export type Drawer =
@@ -56,6 +61,24 @@ export interface TerminalState {
   gate: string;
   setGate: (g: string) => void;
   cycleGate: () => void;
+
+  // calculation pipeline (see pipeline.ts)
+  calcStatus: CalcStatus;
+  calcProgress: number;
+  calcStep: string;
+  calcStats: CalcStats | null;
+  hasRunInitialCalc: boolean;
+  /** the day and gate the current results were computed for */
+  committed: { day: string; gate: string } | null;
+  staged: boolean;
+  setStaged: (v: boolean) => void;
+  /** full pipeline: load the decision, then reveal metrics, charts and table in turn */
+  compute: () => void;
+  /** downstream only: re-apply trading inputs to the loaded decision */
+  rehedge: (ms?: number) => void;
+  rehedging: boolean;
+  computeTick: number;
+  resetToEmpty: () => void;
 
   params: Params;            // what the inputs show
   applied: Params;           // what the calculations use
@@ -145,6 +168,20 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<number | undefined>(undefined);
 
+  const [committed, setCommitted] = useState<{ day: string; gate: string } | null>(null);
+  const [calcStatus, setCalcStatus] = useState<CalcStatus>("empty");
+  const [calcStats, setCalcStats] = useState<CalcStats | null>(null);
+  const [hasRun, setHasRun] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const [staged, setStaged] = useState(true);
+  const [rehedging, setRehedging] = useState(false);
+  const [computeTick, setComputeTick] = useState(0);
+  const timers = useRef<number[]>([]);
+  const runStart = useRef(0);
+  const scheduledRun = useRef(-1);
+  const fetchMs = useRef(0);
+  const mathMs = useRef(0);
+
   const notify = useCallback((msg: string) => {
     setNotice(msg);
     window.clearTimeout(noticeTimer.current);
@@ -163,22 +200,78 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
   const { view, day } = route;
 
   // a new decision starts clean
+  const committedKey = committed ? `${committed.day}|${committed.gate}` : null;
   useEffect(() => {
     setOverrides({});
     setSelected(null);
-  }, [day, gate]);
+  }, [committedKey]);
 
-  // live recalculation: inputs apply immediately, otherwise wait for Recalc
-  useEffect(() => {
-    if (liveRecalc) {
-      setApplied(params);
-      setRecalcTick((n) => n + 1);
-    }
-  }, [params, liveRecalc]);
-  const recalc = useCallback(() => {
+  // --- calculation pipeline -----------------------------------------------------------
+  const clearTimers = () => {
+    timers.current.forEach((id) => window.clearTimeout(id));
+    timers.current = [];
+  };
+
+  const compute = useCallback(() => {
+    clearTimers();
+    runStart.current = performance.now();
     setApplied(params);
     setRecalcTick((n) => n + 1);
-  }, [params]);
+    setCommitted({ day, gate });
+    setCalcStats(null);
+    setCalcStatus("initializing");
+    setHasRun(true);
+    setComputeTick((n) => n + 1);
+  }, [params, day, gate]);
+
+  const resetToEmpty = useCallback(() => {
+    clearTimers();
+    setCommitted(null);
+    setCalcStatus("empty");
+    setCalcStats(null);
+    setHasRun(false);
+    setTouched(false);
+  }, []);
+
+  // picking a new day (or, after the first run, a new gate) runs the full pipeline
+  useEffect(() => {
+    if (!(hasRun || touched)) return;
+    if (committed && committed.day === day && committed.gate === gate) return;
+    compute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day, gate, touched]);
+
+  // trading inputs: after a run, re-hedge downstream figures; otherwise apply silently
+  useEffect(() => {
+    if (!liveRecalc || params === applied) return;
+    if (!hasRun || calcStatus !== "ready" || !staged) {
+      setApplied(params);
+      setRecalcTick((n) => n + 1);
+      return;
+    }
+    setRehedging(true);
+    const id = window.setTimeout(() => {
+      setApplied(params);
+      setRecalcTick((n) => n + 1);
+      setRehedging(false);
+    }, REHEDGE_MS);
+    return () => {
+      window.clearTimeout(id);
+      setRehedging(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, liveRecalc]);
+
+  const rehedge = useCallback((ms = 400) => {
+    if (!hasRun) return compute();
+    setRehedging(true);
+    window.setTimeout(() => {
+      setApplied(params);
+      setRecalcTick((n) => n + 1);
+      setRehedging(false);
+    }, staged ? ms : 0);
+  }, [hasRun, compute, params, staged]);
+  const recalc = useCallback(() => rehedge(500), [rehedge]);
 
   // demo jitter: a small random walk on the forecast, clearly flagged in the UI
   useEffect(() => {
@@ -197,16 +290,55 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
   }, [jitter]);
 
   // data
-  const decision = useAsync(() => api.decision(day, gate), [day, gate]);
-  const d = decision.data;
-  const series = useAsync(
-    () => (d ? api.series(d.delivery_start, d.delivery_end, 0) : Promise.resolve(null)),
-    [d?.delivery_start],
-  );
-  const halfHourActuals = useMemo(() => {
-    if (!series.data) return null;
-    return new Map(series.data.actual.filter((a) => a.mw != null).map((a) => [new Date(a.t).getTime(), a.mw!]));
-  }, [series.data]);
+  // data for the committed day and gate only
+  const [dec, setDec] = useState<{ key: string; data: Decision } | null>(null);
+  const [decError, setDecError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!committed || dec?.key === committedKey) return;
+    let live = true;
+    setDecError(null);
+    api.decision(committed.day, committed.gate)
+      .then((data) => live && setDec({ key: committedKey!, data }))
+      .catch((e: Error) => live && setDecError(e.message));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [committedKey]);
+  const d = dec && dec.key === committedKey ? dec.data : null;
+  const decision: AsyncState<Decision> = {
+    data: d,
+    error: decError,
+    loading: committed != null && d == null && decError == null,
+  };
+
+  const [series, setSeries] = useState<{ start: string; actual: Map<number, number> } | null>(null);
+  useEffect(() => {
+    if (!d || series?.start === d.delivery_start) return;
+    let live = true;
+    api.series(d.delivery_start, d.delivery_end, 0).then((s) => {
+      if (!live) return;
+      const m = new Map(s.actual.filter((a) => a.mw != null).map((a) => [new Date(a.t).getTime(), a.mw!]));
+      setSeries({ start: d.delivery_start, actual: m });
+    }).catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d?.delivery_start]);
+  const halfHourActuals = d && series?.start === d.delivery_start ? series.actual : null;
+
+  // once the decision is loaded, schedule the remaining reveal steps
+  useEffect(() => {
+    if (calcStatus !== "initializing" || !d || scheduledRun.current === computeTick) return;
+    scheduledRun.current = computeTick;
+    const elapsed = performance.now() - runStart.current;
+    fetchMs.current = elapsed;
+    for (const { status, delay } of remainingSchedule(staged ? STAGED_MS : 0, elapsed)) {
+      timers.current.push(window.setTimeout(() => setCalcStatus(status), delay));
+    }
+  }, [calcStatus, d, staged, computeTick]);
+  useEffect(() => () => clearTimers(), []);
 
   const hindsightPeriods = useMemo(
     () => (d ? buildPeriods(d, halfHourActuals, detailed, noise) : []),
@@ -216,7 +348,40 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
     () => (showActuals ? hindsightPeriods : hindsightPeriods.map((p) => ({ ...p, actual: null }))),
     [hindsightPeriods, showActuals],
   );
-  const rows = useMemo(() => computeRows(periods, applied, overrides), [periods, applied, overrides]);
+  const rows = useMemo(() => {
+    const t0 = performance.now();
+    const out = computeRows(periods, applied, overrides);
+    mathMs.current = performance.now() - t0;
+    return out;
+  }, [periods, applied, overrides]);
+
+  // measured, not invented: timings, rows and a lookahead check on what the API returned
+  useEffect(() => {
+    if (calcStatus !== "ready" || !d) return;
+    const lk = checkLookahead(
+      [...d.points, ...d.previous_runs.map((r) => ({ publish_time: r.publish_time }))],
+      d.decision_time,
+    );
+    setCalcStats({
+      totalMs: performance.now() - runStart.current,
+      fetchMs: fetchMs.current,
+      mathMs: mathMs.current,
+      rows: rows.length,
+      checked: lk.checked,
+      lookaheadOk: lk.ok,
+      heapMb: heapMb(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calcStatus]);
+  const calcStep = committed
+    ? stepMessage(calcStatus, {
+        day: committed.day,
+        gate: committed.gate,
+        lookbackDays: meta.error_lookback_days,
+        leadH: d?.summary.lead_range_hours?.[0] ?? null,
+        rows: rows.length || (detailed ? 48 : 24),
+      })
+    : "";
   const tot = useMemo(() => totals(rows, applied), [rows, applied]);
 
   const setParam = useCallback(<K extends keyof Params>(k: K, v: Params[K]) => {
@@ -280,10 +445,17 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
       go(VIEWS[(i + dir + VIEWS.length) % VIEWS.length].id, day);
     },
     day,
-    setDay: (dd) => days.includes(dd) && go(view, dd),
+    setDay: (dd) => {
+      if (!days.includes(dd)) return;
+      setTouched(true);
+      go(view, dd);
+    },
     stepDay: (n) => {
       const i = days.indexOf(day) + n;
-      if (i >= 0 && i < days.length) go(view, days[i]);
+      if (i >= 0 && i < days.length) {
+        setTouched(true);
+        go(view, days[i]);
+      }
     },
     gate,
     setGate,
@@ -291,6 +463,19 @@ export function TerminalProvider({ meta, children }: { meta: Meta; children: Rea
       const i = GATE_CYCLE.indexOf(gate);
       setGate(GATE_CYCLE[(i + 1) % GATE_CYCLE.length]);
     },
+    calcStatus,
+    calcProgress: progressOf(calcStatus),
+    calcStep,
+    calcStats,
+    hasRunInitialCalc: hasRun,
+    committed,
+    staged,
+    setStaged,
+    compute,
+    rehedge,
+    rehedging,
+    computeTick,
+    resetToEmpty,
     params,
     applied,
     setParam,
