@@ -1,0 +1,18 @@
+{
+  "source": "elexon-bmrs",
+  "fetched_at": "2026-10-26T08:46:46+00:00",
+  "datasets": [
+    "FUELHH (fuelType=WIND)",
+    "WINDFOR"
+  ],
+  "ranges": {
+    "actuals_from_date": "2025-12-15",
+    "actuals_to_date": "2026-02-01",
+    "forecasts_publish_from": "2025-12-13 00:00:00+00:00",
+    "forecasts_publish_to": "2026-02-02 00:00:00+00:00"
+  },
+  "rows": {
+    "actuals": 2352,
+    "forecasts": 29784
+  }
+}

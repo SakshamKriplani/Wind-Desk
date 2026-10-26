@@ -1,0 +1,9 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # keeps a live-fetched snapshot between restarts
+      - ./data:/app/data
+    restart: unless-stopped

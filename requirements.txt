@@ -1,0 +1,6 @@
+# Runtime dependencies for the API (used by Docker, Heroku and Vercel)
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pandas==3.0.5
+numpy==2.5.3
+requests==2.34.2
