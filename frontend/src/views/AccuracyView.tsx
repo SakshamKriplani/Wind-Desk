@@ -58,6 +58,14 @@ function Report({ a, onOpenDay }: { a: Accuracy; onOpenDay: (d: string) => void 
             detail: "median day, either direction",
           },
           {
+            label: "Allowing for recent bias",
+            value: mw(s.adjusted?.mae),
+            detail: s.adjusted?.mae != null && s.mae
+              ? `average miss, ${Math.round(100 * (1 - s.adjusted.mae / s.mae))}% lower than as published`
+              : undefined,
+            tone: s.adjusted?.mae != null && s.mae && s.adjusted.mae < s.mae ? "good" : undefined,
+          },
+          {
             label: "Outturn inside range",
             value: pct(s.band_coverage_pct),
             detail: "P10–P90 band, target 80%",
@@ -120,7 +128,7 @@ function Report({ a, onOpenDay }: { a: Accuracy; onOpenDay: (d: string) => void 
             <ReferenceLine y={0} stroke="var(--ink-3)" />
             <XAxis dataKey="delivery_day" stroke="var(--line)" interval={2}
               tickFormatter={(v) => dayMonth(calendar(v).getTime())} />
-            <YAxis width={64} stroke="var(--line)" tickFormatter={(v) => `${(v / 1000).toFixed(0)} GWh`} />
+            <YAxis width={74} stroke="var(--line)" tickFormatter={(v) => `${(v / 1000).toFixed(0)} GWh`} />
             <Tooltip cursor={{ fill: "var(--line-soft)" }} content={({ active, payload }) => {
               if (!active || !payload?.length) return null;
               const r = payload[0].payload as Accuracy["daily"][number];
@@ -207,15 +215,24 @@ function Takeaways({ a }: { a: Accuracy }) {
   const near = h.find((x) => x.horizon_h === 1);
   const dayAhead = h.find((x) => x.horizon_h === 24);
   if (near?.mae && dayAhead?.mae) {
+    const ratio = dayAhead.mae / near.mae;
     items.push(
-      `A forecast made a day ahead misses by about ${mw(dayAhead.mae)} on average, ${(dayAhead.mae / near.mae).toFixed(1)}× the error of one made an hour ahead. Waiting for later runs helps, but only up to gate closure.`,
+      ratio >= 1.5
+        ? `A forecast made 24 hours ahead missed by ${mw(dayAhead.mae)} on average, ${ratio.toFixed(1)}× the miss of one made an hour ahead. Later runs help, but the day-ahead gate fixes you to the earlier view.`
+        : `A forecast made 24 hours ahead missed by ${mw(dayAhead.mae)} on average, against ${mw(near.mae)} an hour ahead. Waiting for later runs barely helps: most of the error does not come from the lead time.`,
     );
   }
   if (s.bias != null && Math.abs(s.bias) >= 50) {
+    const share = s.mae ? Math.round((100 * Math.abs(s.bias)) / s.mae) : null;
     items.push(
       s.bias > 0
-        ? `The forecast leaned high: on average wind came in ${mw(s.bias)} below it. Counting on the full forecast tends to leave you short.`
-        : `The forecast leaned low: on average wind came in ${mw(-s.bias)} above it, so you may be over-buying.`,
+        ? `The forecast leaned high: wind came in ${mw(s.bias)} below it on average${share ? `, which is ${share}% of the average miss` : ""}. Counting on the full forecast tends to leave you short.`
+        : `The forecast leaned low: wind came in ${mw(-s.bias)} above it on average, so buying against it tends to over-buy.`,
+    );
+  }
+  if (s.adjusted?.mae != null && s.mae && s.adjusted.mae < s.mae) {
+    items.push(
+      `Correcting each forecast by the bias seen over the previous 14 days, using only data known at gate closure, would have cut the average miss from ${mw(s.mae)} to ${mw(s.adjusted.mae)}, and the median daily energy miss from ${pct(s.median_abs_energy_error_pct, 1)} to ${pct(s.adjusted.median_abs_energy_error_pct, 1)}. The day-ahead brief shows this adjusted figure.`,
     );
   }
   if (s.days_over_forecast != null) {

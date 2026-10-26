@@ -5,7 +5,8 @@ made in January 2026:
 
 1. **What is the latest wind forecast I can use right now?** For a chosen decision day and gate closure
    time, it shows the most recent national wind forecast published before gate closure, for the whole
-   next delivery day, with an uncertainty range and the volume left to buy against your demand.
+   next delivery day, with an uncertainty range, a bias-adjusted figure and the volume left to buy
+   against your demand.
 2. **How far can I trust it?** It measures how accurate those gate-closure forecasts were across all 31
    January decisions, and how forecast error grows with horizon from 0 to 48 hours.
 
@@ -51,7 +52,7 @@ API docs are at http://localhost:8000/docs.
 ### Tests
 
 ```bash
-cd backend && pytest          # 25 tests: selection logic, no-lookahead guarantees, metrics, API, ingestion
+cd backend && pytest          # 26 tests: selection logic, no-lookahead guarantees, metrics, API, ingestion
 cd frontend && npm test       # formatting helpers
 ```
 
@@ -82,34 +83,56 @@ git push heroku main
 
 ---
 
-## What the app does
+## Requirements and how the app meets them
 
-### Day-ahead brief
+The brief sets two requirements. Everything else in the app either serves one of them or is listed
+under "Added beyond the brief" with the reason it is there.
 
-- Pick a decision day (1 to 31 January 2026) and gate closure time (default **09:50 UK**, when the
-  GB day-ahead auction closes).
-- The timeline strip shows when the forecast run was published, gate closure, and the delivery day
-  (00:00 to 24:00 UK the following day).
-- Headline: expected wind energy for the delivery day, with a low and high case.
-- Chart: latest forecast, an 80% likely range (P10 to P90), the runs from roughly 6, 12 and 24 hours
-  earlier (to show how the forecast has been moving), and, optionally, the actual outturn in hindsight.
-- Volume left to buy: enter a demand figure and see the energy still to procure, expected and if wind
-  comes in low.
-- Hourly table with CSV download.
+| Requirement (from the brief) | Where it is met |
+| --- | --- |
+| Understand how much power must be procured beyond wind | **Day-ahead brief > Volume left to buy**: demand minus expected wind, as published, bias-adjusted and in a low-wind case. |
+| Decisions are made one day before delivery | Each decision day D buys for D+1 (00:00 to 24:00 UK). The timeline strip shows decision day, gate closure and delivery day. |
+| 1. Clearly understand the **latest** forecast **available when the decision is made** | **Day-ahead brief**: for each delivery period, the latest WINDFOR value published at or before gate closure (`latest_forecasts()` in `analytics.py`). The page is framed as the gate-closure screen; anything known only later is hidden by default. |
+| 2. Evaluate forecast accuracy **quantitatively** | **Forecast accuracy**: MAE, RMSE, bias, normalised MAE, 1-in-10 miss, daily energy miss, all over the 31 January decisions, plus error against horizon from 0 to 48 h. |
+| ...so decisions can be made **considering the quantified error** | The measured error flows back into the brief: a callout states the recent bias at this lead time and the bias-adjusted wind figure; the chart shows the bias-adjusted line and the likely range; the volume panel gives the bias-adjusted volume to buy. The accuracy view shows how much this adjustment would have helped across January. |
+| Data: FUELHH (WIND) and WINDFOR only, for January 2026 decisions | `elexon.py` and `store.py`. No other data source is used. |
+| React frontend, Python backend, Docker, Vercel or Heroku | React + TypeScript (Vite), FastAPI + pandas, `Dockerfile` and `docker-compose.yml`, `vercel.json` and `heroku.yml`. |
 
-### Forecast accuracy
+### Added beyond the brief, and why
 
-- Summary of all 31 January decisions at the chosen gate closure: average miss (MAE), RMSE, bias,
-  1-in-10 miss, median daily energy miss, and how often outturn landed inside the likely range.
-- Plain-language takeaways generated from the numbers.
-- Error against forecast horizon (0 to 48 h), with the lead times used at day-ahead gate closure shaded.
-- Energy miss per delivery day (click a bar to open that day's brief), error by hour of day, and the
-  error distribution.
+| Addition | Why |
+| --- | --- |
+| Gate closure default of 09:50 UK | The brief says "one day before delivery" but not when. 09:50 UK is when the Nord Pool GB day-ahead auction closes. It is adjustable in the UI because other venues and internal cut-offs differ. |
+| Likely range (P10 to P90) | A single number hides risk. The range is built only from errors already observed at gate closure, so it is honest about what the desk could have known. In January it held outturn 80% of the time, matching its target. |
+| Bias-adjusted forecast | The accuracy analysis showed a large, consistent lean. Removing the bias seen in the previous 14 days is the simplest way to act on the quantified error. |
+| Earlier forecast runs on the chart | Shows whether the forecast has been moving between runs, a common question before committing volume. |
+| "What actually happened" (off by default) | Lets the client judge any single day. It is hindsight, so it is hidden unless asked for and never used in a decision. |
+| Error by hour of day, error distribution, daily energy misses, plain-language takeaways | Different cuts of requirement 2 for different readers: when in the day the forecast is weakest, how skewed errors are, which days hurt, and a summary a non-analyst can act on. |
+| Explorer view | Not a requirement. A tool for ad-hoc checks of actual against forecast at any horizon and date range. |
+| Error history from mid-December | The range and bias for 1 January decisions need 14 days of prior errors. This data is used only as history, never scored. |
 
-### Explorer
+---
 
-Actual wind against the forecast made at least *N* hours earlier, for any date range in the January
-delivery period, with a 0 to 48 hour horizon slider.
+## Findings from January 2026
+
+At 09:50 gate closure, over the 31 January decisions:
+
+- The forecast missed by **about 2.0 GW per hour on average** (18% of average wind output). RMSE was
+  2.5 GW and one hour in ten missed by more than 4.2 GW.
+- The miss was **mostly one-directional**: the forecast ran 1.7 GW above outturn on average, and
+  wind under-delivered on 27 of 31 delivery days. A buyer relying on the forecast as published would
+  usually have been short.
+- **Lead time matters less than the bias.** The 24-hour-ahead miss (1.93 GW) is only modestly worse
+  than the 1-hour-ahead miss (1.68 GW), and consecutive runs differ by only about 0.3 GW on average.
+  The error is mostly a systematic offset, not forecast noise.
+- **Correcting for the bias seen in the previous 14 days**, using only data known at gate closure,
+  would have cut the average miss to **1.48 GW (26% lower)** and the median daily energy miss from
+  13.0% to 7.4%.
+- The 80% likely range contained outturn 80% of the time, so it is a fair guide to risk.
+
+A possible cause of the offset, not tested here: FUELHH records metered output, which is reduced when
+wind farms are turned down for network constraints, while the forecast may describe generation before
+those actions. Confirming this would need data outside the brief's scope.
 
 ---
 
@@ -124,6 +147,7 @@ delivery period, with a 0 to 48 hour horizon slider.
 | Forecast at horizon *h* | For target time *T*, the latest forecast published at or before *T − h*. |
 | Horizon cap | Forecasts more than 48 h ahead of their target are ignored; forecasts published after their target are dropped. |
 | Error sign | error = forecast − actual. Positive means wind came in below forecast, so a buyer relying on it is short. |
+| Bias adjustment | Mean error from the same 14-day, ±3 h lead-time history, subtracted from each forecast value. |
 | Likely range | Empirical 10th and 90th percentiles of errors from the previous 14 days, at lead times within ±3 h of each target's lead, using only forecasts and outturn known at gate closure. |
 | Joining | Forecasts are matched to outturn on `startTime`. Outturn re-publications keep the latest value. |
 | Data window | Outturn from 15 Dec 2025 and forecasts from 13 Dec 2025 feed the 14-day error history for early-January decisions. Nothing after gate closure is used in a decision; later data is only used to score it. |
@@ -154,8 +178,7 @@ published after gate closure and checks the decision output does not change.
 │   └── requirements-dev.txt   Runtime plus test dependencies
 ├── data/                      CSV snapshot of the Elexon data (see data/README.md)
 ├── docs/
-│   ├── ARCHITECTURE.md        Design notes for technical review
-│   └── VIDEO_SCRIPT.md        Outline for the two-part demo video
+│   └── ARCHITECTURE.md        Design notes for technical review
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx            Shell, navigation, hash routing

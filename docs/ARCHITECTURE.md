@@ -38,6 +38,12 @@ from the previous 14 days, at similar lead times, filtered to forecasts publishe
 before gate closure. This avoids two common mistakes: assuming normal errors, and quietly using the
 month being evaluated to build the band that is then evaluated.
 
+**Bias adjustment from the same history.** The accuracy analysis on real data showed the forecast
+running about 1.7 GW high, consistently. The cheapest way to act on that is to subtract the mean error
+seen at the same lead time over the previous 14 days (`bias_at_lead` in `band_for_leads()`). It uses the
+same backward-looking history as the likely range, so it carries the same no-lookahead guarantee, and
+`accuracy_report()` scores it over January so its value is measured rather than claimed.
+
 **Caching.** `analytics.prepare()` builds cleaned frames and the joined error table once per dataset.
 Results for each (view, parameters) pair are memoised. Both caches are keyed by dataset identity, so
 injecting a new dataset (tests) invalidates them.
@@ -47,7 +53,7 @@ injecting a new dataset (tests) invalidates them.
 | Test file | What it protects |
 | --- | --- |
 | `test_selection.py` | Horizon selection on a hand-built example, boundary at exactly *h* hours, the 48 h cap, dropping post-target "forecasts" |
-| `test_no_lookahead.py` | Every forecast used is published before gate closure; scrambling all post-gate data leaves the decision unchanged; the 80% band is roughly calibrated |
+| `test_no_lookahead.py` | Every forecast used is published before gate closure; scrambling all post-gate data leaves the forecast, range and bias-adjusted values unchanged; the 80% band is roughly calibrated; bias adjustment reduces error on biased data |
 | `test_metrics.py` | MAE, RMSE, bias, nMAE against known values; time-step detection |
 | `test_elexon.py` | Payload normalisation, WIND filter, de-duplication, list vs wrapped payloads, date chunking |
 | `test_store.py` | Cold start fetches then caches; second start reads the snapshot; request ranges cover the study window |
@@ -69,8 +75,10 @@ errors that grow with lead time. If synthetic data is ever loaded by the app, a 
 - National wind only, as scoped. Solar and embedded generation are out of scope.
 - Demand is a single flat figure typed by the user. The next step is to plug in the client's own
   demand forecast so the "left to buy" figure is hourly and real.
-- The likely range is additive (it does not scale with forecast level) and treats hours independently.
-  A natural improvement is quantile regression on lead time and forecast level.
+- The likely range and bias adjustment are additive (they do not scale with forecast level) and treat
+  hours independently. A natural improvement is quantile regression on lead time and forecast level.
+- The 14-day bias window reacts with a lag when the bias changes. A shorter or weighted window is a
+  tuning choice to test against more months of data.
 - Forecast and outturn are joined on `startTime`. If WINDFOR is hourly and outturn half-hourly, each
   hourly forecast is compared with the half-hour starting on the hour.
 - No authentication; it is a pilot on public data.

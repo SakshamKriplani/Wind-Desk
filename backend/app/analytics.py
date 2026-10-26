@@ -6,6 +6,8 @@ Conventions used everywhere:
 * ``lead`` = target time - publish time, in hours.
 * ``error`` = forecast - actual, in MW. Positive error means the wind came in
   *below* forecast, i.e. the buyer counted on wind that did not arrive.
+* ``adjusted`` = forecast - recent bias at the same lead time. It is how the
+  measured error feeds back into the buying decision.
 * Nothing in the decision view may use information published after the
   decision time. Tests in ``tests/test_no_lookahead.py`` guard this.
 """
@@ -189,22 +191,26 @@ def error_history(p: Prepared, as_of: pd.Timestamp) -> pd.DataFrame:
 
 
 def band_for_leads(history: pd.DataFrame, leads: pd.Series) -> pd.DataFrame:
-    """Empirical error quantiles for each lead time, from errors at similar leads."""
+    """Error statistics for each lead time, from recent errors at similar leads.
+
+    Returns the P10/P90 error quantiles (for the likely range), the mean error
+    (bias, used for the adjusted forecast) and the mean absolute error.
+    """
     lo_q, hi_q = config.BAND_QUANTILES
     h_lead = history["lead_h"].to_numpy()
     h_err = history["error"].to_numpy()
     rows = []
     for lead in leads.to_numpy():
         if np.isnan(lead):
-            rows.append((np.nan, np.nan, np.nan, 0))
+            rows.append((np.nan, np.nan, np.nan, np.nan, 0))
             continue
         sel = h_err[np.abs(h_lead - lead) <= config.LEAD_MATCH_HOURS]
         if sel.size < 20:
-            rows.append((np.nan, np.nan, np.nan, int(sel.size)))
+            rows.append((np.nan, np.nan, np.nan, np.nan, int(sel.size)))
             continue
-        rows.append((np.quantile(sel, lo_q), np.quantile(sel, hi_q),
+        rows.append((np.quantile(sel, lo_q), np.quantile(sel, hi_q), float(np.mean(sel)),
                      float(np.mean(np.abs(sel))), int(sel.size)))
-    return pd.DataFrame(rows, columns=["err_lo", "err_hi", "mae_at_lead", "n_hist"])
+    return pd.DataFrame(rows, columns=["err_lo", "err_hi", "bias_at_lead", "mae_at_lead", "n_hist"])
 
 
 # ----------------------------------------------------------------------------
@@ -221,8 +227,11 @@ def decision_frame(p: Prepared, decision_day: date, gate: time) -> tuple[pd.Data
     # error = forecast - actual  =>  actual = forecast - error
     df["p10"] = (df["forecast"] - df["err_hi"]).clip(lower=0)
     df["p90"] = (df["forecast"] - df["err_lo"]).clip(lower=0)
+    # bias-adjusted: remove the average lean seen recently at this lead time
+    df["adjusted"] = (df["forecast"] - df["bias_at_lead"]).clip(lower=0)
     df["actual"] = df["start_time"].map(p.actual_by_time)
     df["error"] = df["forecast"] - df["actual"]
+    df["adjusted_error"] = df["adjusted"] - df["actual"]
     inside = (df["actual"] >= df["p10"]) & (df["actual"] <= df["p90"])
     df["in_band"] = inside.astype("float64").where(df["actual"].notna() & df["p10"].notna())
     return df, tau
@@ -241,7 +250,7 @@ def _previous_runs(p: Prepared, latest_publish: pd.Timestamp, targets: pd.Series
         if any(r["publish_time"] == iso(pub) for r in runs):
             continue
         run = p.forecasts[(p.forecasts["publish_time"] == pub)
-                          & (p.forecasts["start_time"].isin(targets))]
+                          & (p.forecasts["start_time"].isin(targets))].sort_values("start_time")
         if len(run) < 0.5 * len(targets):
             continue
         runs.append({
@@ -279,10 +288,12 @@ def _decision_view(p: Prepared, decision_day: date, gate: time) -> dict:
         "latest_publish_time": iso(latest_pub),
         "forecast_age_hours": num((tau - latest_pub).total_seconds() / 3600, 2) if latest_pub is not None else None,
         "lead_range_hours": [num(have["lead_h"].min()), num(have["lead_h"].max())] if len(have) else None,
-        "energy_mwh": {"p50": energy("forecast"), "p10": energy("p10"), "p90": energy("p90")},
+        "energy_mwh": {"p50": energy("forecast"), "p10": energy("p10"), "p90": energy("p90"),
+                       "adjusted": energy("adjusted")},
         "mean_mw": num(have["forecast"].mean(), 0) if len(have) else None,
         "peak": None, "trough": None,
         "typical_mae_mw": num(have["mae_at_lead"].mean(), 0) if have["mae_at_lead"].notna().any() else None,
+        "typical_bias_mw": num(have["bias_at_lead"].mean(), 0) if have["bias_at_lead"].notna().any() else None,
         "history_samples": int(have["n_hist"].min()) if len(have) else 0,
     }
     if len(have):
@@ -304,6 +315,9 @@ def _decision_view(p: Prepared, decision_day: date, gate: time) -> dict:
             "energy_error_mwh": num(f_e - a_e, 0),
             "energy_error_pct": num(100 * (f_e - a_e) / a_e) if a_e else None,
             "band_coverage_pct": num(100 * cov.astype(float).mean()) if len(cov) else None,
+            "adjusted_mae": metrics(hind["adjusted_error"])["mae"],
+            "adjusted_energy_error_mwh": num(hind["adjusted_error"].sum() * step, 0)
+            if hind["adjusted_error"].notna().all() else None,
         }
 
     points = [{
@@ -311,6 +325,7 @@ def _decision_view(p: Prepared, decision_day: date, gate: time) -> dict:
         "forecast": num(r.forecast),
         "p10": num(r.p10),
         "p90": num(r.p90),
+        "adjusted": num(r.adjusted),
         "actual": num(r.actual),
         "publish_time": iso(r.publish_time),
         "lead_h": num(r.lead_h),
@@ -360,6 +375,7 @@ def _accuracy_report(p: Prepared, gate: time) -> dict:
         m = metrics(g["error"], g["actual"])
         f_e, a_e = g["forecast"].sum() * step, g["actual"].sum() * step
         cov = g["in_band"].dropna()
+        adj_e = g["adjusted_error"].dropna()
         daily.append({
             "decision_day": d,
             "delivery_day": (date.fromisoformat(d) + timedelta(days=1)).isoformat(),
@@ -369,6 +385,8 @@ def _accuracy_report(p: Prepared, gate: time) -> dict:
             "energy_error_mwh": num(f_e - a_e, 0),
             "energy_error_pct": num(100 * (f_e - a_e) / a_e) if a_e else None,
             "band_coverage_pct": num(100 * cov.astype(float).mean()) if len(cov) else None,
+            "adjusted_mae": num(adj_e.abs().mean()) if len(adj_e) else None,
+            "adjusted_energy_error_mwh": num(adj_e.sum() * step, 0) if len(adj_e) == len(g) else None,
         })
 
     overall = metrics(scored["error"], scored["actual"])
@@ -384,6 +402,14 @@ def _accuracy_report(p: Prepared, gate: time) -> dict:
         overall["days_over_forecast"] = sum(1 for x in daily if (x["energy_error_mwh"] or 0) > 0)
         energy_errs = [abs(x["energy_error_pct"]) for x in daily if x["energy_error_pct"] is not None]
         overall["median_abs_energy_error_pct"] = num(float(np.median(energy_errs))) if energy_errs else None
+
+    # How the bias-adjusted forecast would have done over the same decisions.
+    adj = scored.dropna(subset=["adjusted_error"])
+    adjusted = metrics(adj["adjusted_error"], adj["actual"])
+    adj_daily = [100 * g["adjusted_error"].sum() / g["actual"].sum()
+                 for _, g in adj.groupby("decision_day") if g["actual"].sum() > 0]
+    adjusted["median_abs_energy_error_pct"] = num(float(np.median(np.abs(adj_daily)))) if adj_daily else None
+    overall["adjusted"] = adjusted
 
     # error by UK hour of day
     local_hour = scored["start_time"].dt.tz_convert(config.UK_TZ).dt.hour
@@ -426,7 +452,8 @@ def horizon_curve(p: Prepared, max_h: int = config.MAX_HORIZON_HOURS) -> list[di
         f["actual"] = f["start_time"].map(p.actual_by_time)
         f["error"] = f["forecast"] - f["actual"]
         m = metrics(f["error"], f["actual"])
-        out.append({"horizon_h": h, **m})
+        if m["n"]:  # the longest horizons can have no forecasts at all
+            out.append({"horizon_h": h, **m})
     return out
 
 

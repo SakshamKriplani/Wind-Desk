@@ -19,6 +19,10 @@ def test_decision(client):
     assert body["summary"]["energy_mwh"]["p50"] > 0
     assert body["hindsight"]["n"] == 24
     assert body["previous_runs"]
+    assert body["summary"]["typical_bias_mw"] > 0
+    assert body["summary"]["energy_mwh"]["adjusted"] < body["summary"]["energy_mwh"]["p50"]
+    assert all("adjusted" in p for p in body["points"])
+    assert body["hindsight"]["adjusted_mae"] is not None
 
 
 def test_decision_validation(client):
@@ -29,7 +33,9 @@ def test_decision_validation(client):
 def test_accuracy(client):
     body = client.get("/api/accuracy").json()
     assert len(body["daily"]) == 31
-    assert len(body["by_horizon"]) == 49
+    assert 40 <= len(body["by_horizon"]) <= 49
+    assert all(h["n"] > 0 for h in body["by_horizon"])
+    assert body["summary"]["adjusted"]["mae"] < body["summary"]["mae"]
     assert body["summary"]["mae"] > 0
     # error should broadly grow with horizon
     h = body["by_horizon"]

@@ -31,7 +31,7 @@ def test_future_data_cannot_change_the_decision(ds, day):
     f.loc[pd.to_datetime(f["publish_time"], utc=True) > tau, "generation"] = 99999.0
     tampered, _ = decision_frame(Prepared(Dataset(a, f, {})), day, GATE)
 
-    for col in ["forecast", "p10", "p90", "publish_time"]:
+    for col in ["forecast", "p10", "p90", "adjusted", "publish_time"]:
         pd.testing.assert_series_equal(base[col], tampered[col], check_names=False)
 
 
@@ -45,3 +45,15 @@ def test_band_brackets_forecast_and_is_calibrated(ds):
         cover.append(df["in_band"].dropna().mean())
     # an 80% band should cover roughly 80% of outcomes on stationary synthetic data
     assert 0.6 < np.mean(cover) < 0.95
+
+
+def test_bias_adjustment_uses_past_errors_and_helps_on_biased_data(ds):
+    """Synthetic forecasts lean high by a fixed amount, so removing recent bias should help."""
+    p = Prepared(ds)
+    raw, adj = [], []
+    for d in range(1, 32):
+        df, _ = decision_frame(p, date(2026, 1, d), GATE)
+        assert (df["adjusted"] < df["forecast"] + 1e-6).all()  # positive bias pulls it down
+        raw.append(df["error"].abs().mean())
+        adj.append(df["adjusted_error"].abs().mean())
+    assert np.mean(adj) < np.mean(raw)

@@ -23,7 +23,8 @@ interface Props {
 
 export function BriefView({ meta, day, gate, onDay, onGate }: Props) {
   const { data, error, loading } = useAsync(() => api.decision(day, gate), [day, gate]);
-  const [showActual, setShowActual] = useState(true);
+  // Off by default: the brief is the gate-closure view; outturn is hindsight.
+  const [showActual, setShowActual] = useState(false);
   const [demand, setDemand] = useState(30000);
 
   return (
@@ -64,20 +65,21 @@ function Brief({ d, showActual, setShowActual, demand, setDemand, lookback }: Br
 
   const dayHours = (new Date(d.delivery_end).getTime() - new Date(d.delivery_start).getTime()) / 3600e3;
   const demandMwh = demand * dayHours;
-  const toBuy = s.energy_mwh.p50 != null ? demandMwh - s.energy_mwh.p50 : null;
-  const toBuyLowWind = s.energy_mwh.p10 != null ? demandMwh - s.energy_mwh.p10 : null;
+  const minus = (wind: number | null) => (wind != null ? demandMwh - wind : null);
   const h = d.hindsight;
 
   return (
     <>
       <h1 className="headline">
-        Expect {gwh(s.energy_mwh.p50)} of wind on {longDay(calendar(deliveryDay).getTime())}
+        The latest forecast puts wind at {gwh(s.energy_mwh.p50)} for {longDay(calendar(deliveryDay).getTime())}
       </h1>
       <p className="subhead">
-        From the {time(s.latest_publish_time!)} forecast run, published {hours(s.forecast_age_hours)} before
-        gate closure. If every hour came in at the low end of its usual error range, that would be{" "}
-        {gwh(s.energy_mwh.p10)}; at the high end, {gwh(s.energy_mwh.p90)}.
+        What the desk sees at {time(d.decision_time)} on {longDay(calendar(d.decision_day).getTime())}: the
+        newest forecast is the {time(s.latest_publish_time!)} run, published {hours(s.forecast_age_hours)} before
+        gate closure. Nothing published later is used.
       </p>
+
+      <ErrorCallout d={d} lookback={lookback} />
 
       <Figures
         items={[
@@ -85,7 +87,7 @@ function Brief({ d, showActual, setShowActual, demand, setDemand, lookback }: Br
           { label: "Peak", value: mw(s.peak?.mw), detail: s.peak && `at ${time(s.peak.t)}` },
           { label: "Lowest", value: mw(s.trough?.mw), detail: s.trough && `at ${time(s.trough.t)}` },
           {
-            label: "Typical hourly error",
+            label: "Typical hourly miss",
             value: s.typical_mae_mw != null ? `± ${mw(s.typical_mae_mw)}` : "–",
             detail: `at this lead time, last ${lookback} days`,
           },
@@ -109,7 +111,7 @@ function Brief({ d, showActual, setShowActual, demand, setDemand, lookback }: Br
             </div>
             <label className="toggle">
               <input type="checkbox" checked={showActual} onChange={(e) => setShowActual(e.target.checked)} />
-              Show actual outturn
+              Show what actually happened
             </label>
           </div>
           <DecisionChart d={d} showActual={showActual} />
@@ -125,12 +127,17 @@ function Brief({ d, showActual, setShowActual, demand, setDemand, lookback }: Br
           </label>
           <dl className="kv">
             <dt>Demand</dt><dd>{gwh(demandMwh)}</dd>
-            <dt>Expected wind</dt><dd>− {gwh(s.energy_mwh.p50)}</dd>
-            <dt>Left to buy</dt><dd className="big">{gwh(toBuy)}</dd>
-            <dt>If wind comes in low</dt><dd className="bad">{gwh(toBuyLowWind)}</dd>
+            <dt>Left to buy, using the forecast as published</dt><dd>{gwh(minus(s.energy_mwh.p50))}</dd>
+            {s.energy_mwh.adjusted != null && (
+              <>
+                <dt>Left to buy, allowing for recent bias</dt>
+                <dd className="big">{gwh(minus(s.energy_mwh.adjusted))}</dd>
+              </>
+            )}
+            <dt>If wind comes in low (P10)</dt><dd className="bad">{gwh(minus(s.energy_mwh.p10))}</dd>
           </dl>
 
-          {h && (
+          {showActual && h && (
             <>
               <hr className="divider" />
               <h2>What actually happened</h2>
@@ -141,22 +148,55 @@ function Brief({ d, showActual, setShowActual, demand, setDemand, lookback }: Br
                 <dd className={(h.energy_error_mwh ?? 0) > 0 ? "bad" : "good"}>
                   {signed(h.energy_error_mwh, "MWh")}
                 </dd>
-                <dt>Average hourly miss</dt><dd>{mw(h.mae)}</dd>
+                {h.adjusted_energy_error_mwh != null && (
+                  <>
+                    <dt>Bias-adjusted minus actual</dt>
+                    <dd className={h.adjusted_energy_error_mwh > 0 ? "bad" : "good"}>
+                      {signed(h.adjusted_energy_error_mwh, "MWh")}
+                    </dd>
+                  </>
+                )}
+                <dt>Average hourly miss</dt>
+                <dd>{mw(h.mae)}{h.adjusted_mae != null && <> ({mw(h.adjusted_mae)} adjusted)</>}</dd>
                 <dt>Hours inside range</dt><dd>{pct(h.band_coverage_pct)}</dd>
               </dl>
-              {(h.energy_error_mwh ?? 0) > 0 && (
-                <p className="note" style={{ marginTop: 10 }}>
-                  Wind under-delivered, so buying against this forecast would have left you short by
-                  about {gwh(h.energy_error_mwh)}.
-                </p>
-              )}
             </>
           )}
         </aside>
       </div>
 
-      <HourlyTable d={d} demand={demand} step={step} />
+      <HourlyTable d={d} demand={demand} step={step} showActual={showActual} />
     </>
+  );
+}
+
+/** Turns the measured error into a planning figure: the accuracy loop closed on the decision screen. */
+function ErrorCallout({ d, lookback }: { d: Decision; lookback: number }) {
+  const s = d.summary;
+  const bias = s.typical_bias_mw;
+  if (bias == null || s.energy_mwh.adjusted == null) {
+    return (
+      <p className="callout">
+        Not enough recent history at this lead time to measure the forecast's error yet.
+      </p>
+    );
+  }
+  if (Math.abs(bias) < 100) {
+    return (
+      <p className="callout">
+        Over the last {lookback} days, forecasts made this far ahead showed no consistent lean. Expect a
+        typical miss of about ±{mw(s.typical_mae_mw)} in any hour.
+      </p>
+    );
+  }
+  const high = bias > 0;
+  return (
+    <p className="callout">
+      <strong>Allow for the forecast's recent lean.</strong> Over the last {lookback} days, forecasts made this
+      far ahead came in {mw(Math.abs(bias))} {high ? "above" : "below"} actual output on average. Allowing for
+      that, plan on {gwh(s.energy_mwh.adjusted)} of wind rather than {gwh(s.energy_mwh.p50)}
+      {high ? ", which means buying more from the market." : ", which means buying less from the market."}
+    </p>
   );
 }
 
@@ -165,6 +205,7 @@ interface Row {
   forecast: number | null;
   band: [number, number] | null;
   actual: number | null;
+  adjusted: number | null;
   [run: string]: number | null | [number, number];
 }
 
@@ -178,6 +219,7 @@ function DecisionChart({ d, showActual }: { d: Decision; showActual: boolean }) 
         forecast: p.forecast,
         band: p.p10 != null && p.p90 != null ? [p.p10, p.p90] : null,
         actual: p.actual,
+        adjusted: p.adjusted,
       });
     }
     runs.forEach((r, i) => {
@@ -199,6 +241,7 @@ function DecisionChart({ d, showActual }: { d: Decision; showActual: boolean }) 
       <ul className="legend">
         <li><span className="swatch" style={{ background: "var(--sea)" }} />Latest forecast</li>
         <li><span className="swatch band" style={{ background: "var(--sea-band)" }} />Likely range (P10–P90)</li>
+        <li style={{ color: "var(--ink-2)" }}><span className="swatch dash" />Allowing for recent bias</li>
         {runs.length > 0 && (
           <li style={{ color: "var(--sea-faint)" }}><span className="swatch dash" />Earlier runs</li>
         )}
@@ -216,6 +259,7 @@ function DecisionChart({ d, showActual }: { d: Decision; showActual: boolean }) 
               const r = payload[0].payload as Row;
               const rows = [
                 { label: "Forecast", value: mw(r.forecast), color: "var(--sea)" },
+                { label: "Allowing for bias", value: mw(r.adjusted), color: "var(--ink-2)" },
                 { label: "Range", value: r.band ? `${mw(r.band[0])} – ${mw(r.band[1])}` : "–" },
               ];
               if (showActual) rows.push({ label: "Actual", value: mw(r.actual), color: "var(--amber)" });
@@ -227,6 +271,8 @@ function DecisionChart({ d, showActual }: { d: Decision; showActual: boolean }) 
             <Line key={i} dataKey={`run${i}`} name={runLabel(i)} stroke="var(--sea-faint)" strokeWidth={1.2}
               strokeDasharray="4 3" dot={false} isAnimationActive={false} connectNulls />
           ))}
+          <Line dataKey="adjusted" stroke="var(--ink-2)" strokeWidth={1.6} strokeDasharray="6 3" dot={false}
+            isAnimationActive={false} />
           <Line dataKey="forecast" stroke="var(--sea)" strokeWidth={2.6} dot={false} isAnimationActive={false} />
           {showActual && (
             <Line dataKey="actual" stroke="var(--amber)" strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -237,14 +283,16 @@ function DecisionChart({ d, showActual }: { d: Decision; showActual: boolean }) 
   );
 }
 
-function HourlyTable({ d, demand, step }: { d: Decision; demand: number; step: number }) {
+function HourlyTable({ d, demand, step, showActual }: { d: Decision; demand: number; step: number; showActual: boolean }) {
   const rows = d.points.map((p) => ({
     time_uk: time(p.t),
     start_time_utc: p.t,
     forecast_mw: p.forecast,
     p10_mw: p.p10,
     p90_mw: p.p90,
+    adjusted_mw: p.adjusted,
     to_buy_mw: p.forecast != null ? Math.round(demand - p.forecast) : null,
+    to_buy_adjusted_mw: p.adjusted != null ? Math.round(demand - p.adjusted) : null,
     to_buy_low_wind_mw: p.p10 != null ? Math.round(demand - p.p10) : null,
     actual_mw: p.actual,
     forecast_run_utc: p.publish_time,
@@ -265,8 +313,9 @@ function HourlyTable({ d, demand, step }: { d: Decision; demand: number; step: n
           <table>
             <thead>
               <tr>
-                <th>Time</th><th>Forecast</th><th>Low (P10)</th><th>High (P90)</th>
-                <th>To buy</th><th>To buy, low wind</th><th>Actual</th>
+                <th>Time</th><th>Forecast</th><th>Bias-adjusted</th><th>Low (P10)</th><th>High (P90)</th>
+                <th>To buy</th><th>To buy, adjusted</th><th>To buy, low wind</th>
+                {showActual && <th>Actual</th>}
               </tr>
             </thead>
             <tbody>
@@ -274,11 +323,13 @@ function HourlyTable({ d, demand, step }: { d: Decision; demand: number; step: n
                 <tr key={r.start_time_utc}>
                   <td>{r.time_uk}</td>
                   <td>{mw(r.forecast_mw)}</td>
+                  <td>{mw(r.adjusted_mw)}</td>
                   <td>{mw(r.p10_mw)}</td>
                   <td>{mw(r.p90_mw)}</td>
                   <td>{mw(r.to_buy_mw)}</td>
+                  <td>{mw(r.to_buy_adjusted_mw)}</td>
                   <td>{mw(r.to_buy_low_wind_mw)}</td>
-                  <td>{mw(r.actual_mw)}</td>
+                  {showActual && <td>{mw(r.actual_mw)}</td>}
                 </tr>
               ))}
             </tbody>

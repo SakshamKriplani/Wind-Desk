@@ -33,6 +33,7 @@ export interface DecisionPoint {
   forecast: number | null;
   p10: number | null;
   p90: number | null;
+  adjusted: number | null;
   actual: number | null;
   publish_time: string | null;
   lead_h: number | null;
@@ -57,11 +58,12 @@ export interface Decision {
     latest_publish_time: string | null;
     forecast_age_hours: number | null;
     lead_range_hours: [number, number] | null;
-    energy_mwh: { p50: number | null; p10: number | null; p90: number | null };
+    energy_mwh: { p50: number | null; p10: number | null; p90: number | null; adjusted: number | null };
     mean_mw: number | null;
     peak: { t: string; mw: number } | null;
     trough: { t: string; mw: number } | null;
     typical_mae_mw: number | null;
+    typical_bias_mw: number | null;
     history_samples: number;
   };
   hindsight:
@@ -71,6 +73,8 @@ export interface Decision {
         energy_error_mwh: number | null;
         energy_error_pct: number | null;
         band_coverage_pct: number | null;
+        adjusted_mae: number | null;
+        adjusted_energy_error_mwh: number | null;
       })
     | null;
   points: DecisionPoint[];
@@ -85,6 +89,8 @@ export interface DailyAccuracy extends Metrics {
   energy_error_mwh: number | null;
   energy_error_pct: number | null;
   band_coverage_pct: number | null;
+  adjusted_mae: number | null;
+  adjusted_energy_error_mwh: number | null;
 }
 
 export interface Accuracy {
@@ -97,6 +103,7 @@ export interface Accuracy {
     best_day?: { delivery_day: string; mae: number };
     days_over_forecast?: number;
     median_abs_energy_error_pct?: number | null;
+    adjusted: Metrics & { median_abs_energy_error_pct: number | null };
   };
   daily: DailyAccuracy[];
   by_hour: { hour: number; mae: number | null; bias: number | null; n: number }[];
