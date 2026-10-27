@@ -4,11 +4,67 @@ Written for technical review. The README covers setup and the method table.
 
 ## Shape of the system
 
-```
-Elexon BMRS ──► elexon.py ──► store.py ──► analytics.py ──► main.py (FastAPI) ──► React app
- FUELHH, WINDFOR   fetch +       CSV snapshot    pure pandas         JSON API,          three views,
-                   normalise     or live fetch   functions,          validation,        Recharts
-                                 + cache         cached per dataset  serves SPA
+```mermaid
+flowchart TB
+    subgraph External["External Data Sources (Elexon BMRS)"]
+        direction LR
+        BMRS_ACT["FUELHH Stream\n(Half-hourly Wind Outturn)"]
+        BMRS_FCST["WINDFOR Stream\n(Forecast Runs with publishTime)"]
+    end
+
+    subgraph Ingestion["Ingestion & Persistence Layer (backend/app/)"]
+        direction TB
+        ELEXON["elexon.py\n• REST client & stream parser\n• UTC tz-aware normalization"]
+        STORE["store.py (DataStore)\n• Snapshot CSV loader (Cold Start)\n• Live fallback fetcher\n• In-memory Pandas cache"]
+        CSV_CACHE[("data/*.csv\n• actuals_wind.csv (2,352 rows)\n• forecasts_wind.csv (19,533 rows)")]
+    end
+
+    subgraph Analytics["Core Analytics & Trading Engine (backend/app/analytics.py)"]
+        direction TB
+        PREP["Prepared State\n• Target time index & fast lookups"]
+        MERGE["As-Of Decision Filter (No-Lookahead)\n• publish_time <= Decision Gate\n• Lead horizon: 14h to 38h"]
+        UNCERTAINTY["Empirical Uncertainty Engine\n• 14-day rolling error residuals\n• Lead-conditioned P10 / P90 bounds"]
+        BIAS["Feedback & Hedging Engine\n• Recent bias at lead time\n• Bias-adjusted purchase curve"]
+        METRICS["Quantitative Accuracy Engine\n• WAPE, MAE, RMSE, Systematic Bias\n• 0-48h horizon degradation curve"]
+    end
+
+    subgraph API["API & Server Layer (backend/app/main.py)"]
+        direction TB
+        FASTAPI["FastAPI Application\n• Parameter validation & schema models\n• Memoized calculation cache"]
+        ENDPOINTS["REST Endpoints\n• GET /api/decision?day=&gate=\n• GET /api/accuracy?gate=\n• GET /api/meta\n• GET /api/health"]
+    end
+
+    subgraph Frontend["Enterprise Terminal Frontend (React 19 + TypeScript)"]
+        direction TB
+        SHELL["TallyPrime Terminal Shell\n• Master Navy bar & Action Rail\n• Live Telemetry Ticker"]
+        PIPELINE["Staggered Calculation Pipeline\n(pipeline.ts / TerminalStateContext)\n• Progressive Phase 1-4 calculation\n• Odometer counts & dynamic SVG draw"]
+        VIEWS["Workstation Trading Views\n1. BriefView: Day-Ahead Trading Desk\n2. LedgerView: 48 Settlement Periods Blotter\n3. AccuracyView: Horizon Error Matrix\n4. SimulatorView: Interactive Hedging Sandbox"]
+    end
+
+    subgraph Guardrails["Engineering Guardrails & Quality Assurance"]
+        TEST_LOOKAHEAD["test_no_lookahead.py\nGuarantees zero future leakage into D-1 gate"]
+        TEST_SUITE["pytest test suite\nMetrics, Elexon API, selection tests"]
+    end
+
+    %% Data Flows
+    BMRS_ACT --> ELEXON
+    BMRS_FCST --> ELEXON
+    ELEXON --> STORE
+    CSV_CACHE <--> STORE
+    STORE --> PREP
+    PREP --> MERGE
+    MERGE --> UNCERTAINTY
+    MERGE --> BIAS
+    PREP --> METRICS
+    UNCERTAINTY --> ENDPOINTS
+    BIAS --> ENDPOINTS
+    METRICS --> ENDPOINTS
+    FASTAPI --> ENDPOINTS
+    ENDPOINTS <== HTTP / JSON ==> PIPELINE
+    PIPELINE --> SHELL
+    SHELL --> VIEWS
+    Analytics -. Strictly Audited by .-> TEST_LOOKAHEAD
+    API -. Validated by .-> TEST_SUITE
 ```
 
 One deployable unit. In Docker and on Heroku, FastAPI serves both `/api/*` and the built React app.
